@@ -45,10 +45,16 @@ struct SGLyricsAttributes: ActivityAttributes {
         var windowChars: Int
         /// 是否用封面主色（真时 accent 有效）
         var useArtworkColor: Bool
+        /// TimelineView 的刷新周期（秒），由主 App 按「平滑」档位下发。
+        /// 对应灵动歌词的 refreshTime：它也是运行时算好再传给 extension 的。
+        var refreshTime: Double
+        /// 平滑滚动开关（对应它的 _smoothDI）。关掉时整行原地不滚。
+        var smoothScroll: Bool
         /// 主题色，6 位 hex 不带 #
         var accent: String
 
         static let defaultAccent = "1ED760"
+    static let defaultRefresh: Double = 0.2
 
         /// 到 now 为止已唱完的字数（0…line.count）。
         /// 纯函数，不保存状态，extension 每秒调一次即可。

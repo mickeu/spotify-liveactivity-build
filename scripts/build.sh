@@ -16,11 +16,11 @@ echo "==> SDK: $SDK"
 
 echo "==> 1/3 ObjC 构造器"
 "$CLANG" -c "$ROOT/Source/Bootstrap.m" -o "$OUT/.obj/Bootstrap.o" \
-  -target arm64-apple-ios16.0 -isysroot "$SDK" -fobjc-arc -O2 -Wall
+  -target arm64-apple-ios16.2 -isysroot "$SDK" -fobjc-arc -O2 -Wall
 
 echo "==> 2/3 SGLiveIsland.dylib"
 "$SWIFTC" -O -wmo -emit-library \
-  -target arm64-apple-ios16.0 -sdk "$SDK" \
+  -target arm64-apple-ios16.2 -sdk "$SDK" \
   -module-name SGLiveIsland \
   -swift-version 5 \
   -framework Foundation -framework UIKit -framework ActivityKit \

@@ -15,7 +15,7 @@ import ActivityKit
 import ObjectiveC
 import os
 
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 @objc(SGLLiveIsland)
 public final class SGLLiveIsland: NSObject {
 
@@ -71,8 +71,8 @@ public final class SGLLiveIsland: NSObject {
     private static func resolveBridge() {
         guard let cls = NSClassFromString("SGLiveActivityBridge") else { return }
         let sel = NSSelectorFromString("isShowing")
-        guard let method = class_getClassMethod(cls, sel),
-              let imp = method_getImplementation(method) else { return }
+        guard let method = class_getClassMethod(cls, sel) else { return }
+        let imp = method_getImplementation(method)
         typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
         let getter = unsafeBitCast(imp, to: Getter.self)
         bridgeIsShowing = { getter(cls, sel) }
@@ -104,17 +104,21 @@ public final class SGLLiveIsland: NSObject {
     private enum Defaults {
         static let enabled      = "sgl.enabled"
         static let autoHide     = "sgl.autoHide"
-        static let hideOnPause  = "sgl.hideOnPause"
+        static let hideOnPauseKey = "sgl.hideOnPause"
         static let artworkColor = "sgl.artworkColor"
         static let tick         = "sgl.tick"
         static let width        = "sgl.width"
         static let fontSize     = "sgl.fontSize"
+        static let smooth       = "sgl.smooth"
 
         static var isOn: Bool { UserDefaults.standard.object(forKey: enabled) as? Bool ?? true }
         static var autoHideSeconds: Int { UserDefaults.standard.object(forKey: autoHide) as? Int ?? 30 }
-        static var hideOnPause: Bool { UserDefaults.standard.object(forKey: hideOnPause) as? Bool ?? false }
+        static var hideOnPause: Bool { UserDefaults.standard.object(forKey: hideOnPauseKey) as? Bool ?? false }
         static var useArtworkColor: Bool { UserDefaults.standard.object(forKey: artworkColor) as? Bool ?? true }
         static var fontStep: Int { UserDefaults.standard.object(forKey: fontSize) as? Int ?? 1 }
+        static var smoothScroll: Bool { UserDefaults.standard.object(forKey: smooth) as? Bool ?? true }
+        /// extension 的刷新周期；暂停时放宽，省电
+        static var refreshTime: Double { smoothScroll ? 0.2 : 1.0 }
         static var tickInterval: Double {
             let v = UserDefaults.standard.object(forKey: tick) as? Double ?? 0.5
             return min(max(v, 0.25), 2.0)
@@ -295,9 +299,10 @@ public final class SGLLiveIsland: NSObject {
         return info
     }
 
-    private static func lineText(_ line: NSObject) -> String {
+    private static func lineText(_ line: AnyObject) -> String {
         if let f = fnLineText, let s = f(line) { return s as String }
-        let words = line.value(forKey: "words") as? [AnyObject] ?? []
+        guard let nso = line as? NSObject else { return "" }
+        let words = nso.value(forKey: "words") as? [AnyObject] ?? []
         var out = ""
         for w in words {
             guard let wso = w as? NSObject else { continue }
@@ -323,6 +328,8 @@ public final class SGLLiveIsland: NSObject {
             fontStep: Defaults.fontStep,
             windowChars: Defaults.windowChars,
             useArtworkColor: Defaults.useArtworkColor,
+            refreshTime: Defaults.refreshTime,
+            smoothScroll: Defaults.smoothScroll,
             accent: accentHex()
         )
         let stale: Date? = info.paused && Defaults.autoHideSeconds > 0

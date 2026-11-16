@@ -141,9 +141,11 @@ private struct CompactLyrics: View {
         let size = fontSize(state, compact: true)
         let chars = Array(state.line)
 
-        TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
+        TimelineView(.periodic(from: .now, by: max(state.refreshTime, 0.1))) { ctx in
             let p = Scroll.position(state, at: ctx.date)
-            let shift = Metrics.offset(chars, upTo: p, size: size)
+            // 灵动歌词的 forceNoScroll：暂停、关掉平滑、或整行本来就塞得下时不滚
+            let scrollable = state.smoothScroll && !state.paused && chars.count > state.windowChars
+            let shift = scrollable ? Metrics.offset(chars, upTo: p, size: size) : 0
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -218,7 +220,7 @@ private struct ExpandedLyrics: View {
     let state: SGLyricsAttributes.ContentState
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
+        TimelineView(.periodic(from: .now, by: max(state.refreshTime, 0.1))) { ctx in
             Text(highlighted(state.sungCount(at: ctx.date)))
                 .font(.system(size: fontSize(state, compact: false),
                               weight: .semibold, design: .rounded))
@@ -270,7 +272,7 @@ private struct LockScreenView: View {
     let state: SGLyricsAttributes.ContentState
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
+        TimelineView(.periodic(from: .now, by: max(state.refreshTime, 0.1))) { ctx in
             VStack(alignment: .leading, spacing: 6) {
                 Text(highlighted(state.sungCount(at: ctx.date)))
                     .font(.system(size: 21, weight: .semibold, design: .rounded))

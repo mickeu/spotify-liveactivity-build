@@ -10,6 +10,15 @@ import SwiftUI
 import UIKit
 import WidgetKit
 
+private struct Trace {
+    static var count = 0
+    static func note(_ text: String) {
+        guard count < 40 else { return }
+        count += 1
+        SGLLogLine("W\(count) " + text)
+    }
+}
+
 private enum Metrics {
     /// 灵动岛单行字号（小 / 标准 / 大）
     static func islandSize(_ step: Int) -> CGFloat {
@@ -115,6 +124,7 @@ private struct IslandLine: View {
     private let fadeWidth: CGFloat = 10
 
     var body: some View {
+        Trace.note("island len=\(state.line.count) dur=\(String(format: "%.2f", state.lineDuration)) wide=\(state.wideIsland)")
         let size = Metrics.islandSize(state.fontStep)
         let lineHeight = UIFont.systemFont(ofSize: size, weight: .semibold).lineHeight
         let text = visibleText
@@ -185,6 +195,7 @@ private struct LockScreenLyrics: View {
     var expanded = false
 
     var body: some View {
+        Trace.note("lock len=\(state.line.count) prev=\(state.prevLine.count) next=\(state.nextLine.count)")
         let size = Metrics.bodySize(state.fontStep, big: expanded)
         VStack(spacing: expanded ? 4 : 3) {
             if !state.prevLine.isEmpty {

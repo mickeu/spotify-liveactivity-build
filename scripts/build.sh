@@ -32,19 +32,21 @@ echo "==> 2/3 SGLiveIsland.dylib"
   -o "$OUT/SGLiveIsland.dylib" \
   "$ROOT/Shared/SGLyricsAttributes.swift" \
   "$ROOT/Source/SGLLiveIsland.swift" \
-  "$OUT/.obj/Bootstrap.o" "$OUT/.obj/Settings.o" "$OUT/.obj/Artwork.o"
+  "$OUT/.obj/Bootstrap.o" "$OUT/.obj/Settings.o" "$OUT/.obj/Artwork.o" "$OUT/.obj/Diag.o"
 
 echo "==> 3/3 SGLiveIslandWidget.appex"
 "$SWIFTC" -O -wmo -parse-as-library \
   -target arm64-apple-ios17.0 -sdk "$SDK" \
   -module-name SGLiveIsland \
   -swift-version 5 \
+  -import-objc-header "$ROOT/Source/Diag.h" \
   -framework SwiftUI -framework WidgetKit -framework ActivityKit \
   -Xlinker -e -Xlinker _NSExtensionMain \
   -o "$OUT/SGLiveIslandWidget.appex/SGLiveIslandWidget" \
   "$ROOT/Shared/SGLyricsAttributes.swift" \
   "$ROOT/Widget/ClockDriver.swift" \
-  "$ROOT/Widget/SGLiveIslandWidget.swift"
+  "$ROOT/Widget/SGLiveIslandWidget.swift" \
+  "$OUT/.obj/Diag.o"
 
 cp "$ROOT/Widget/Info.plist" "$OUT/SGLiveIslandWidget.appex/Info.plist"
 plutil -convert binary1 "$OUT/SGLiveIslandWidget.appex/Info.plist"

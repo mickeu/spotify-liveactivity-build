@@ -575,7 +575,7 @@ public final class SGLLiveIsland: NSObject {
 
     /// 最小验证：不依赖歌词与插件，直接请求一张写死文字的活动。
     private static func selfTest() {
-        guard Defaults.isOn else { return }
+        guard Defaults.isOn, testTick < 3 else { return }
         testTick += 1
         let text = "自检 TEST #\(testTick)"
         let state = SGLyricsAttributes.ContentState(

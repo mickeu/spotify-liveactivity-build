@@ -133,14 +133,14 @@ static id SettingsPage(void) {
     id display = sSection(@"显示", @[color, translation, pause, autoHide]);
     id logRow = [[NSClassFromString(@"SGModRow") alloc] init];
     ((void (*)(id, SEL, id))objc_msgSend)(logRow, NSSelectorFromString(@"setTitle:"), @"查看日志");
-    void (^logPage)(void) = ^UIViewController *{ return [[SGLLogViewController alloc] init]; };
+    UIViewController *(^logPage)(void) = ^UIViewController *{ return [[SGLLogViewController alloc] init]; };
     ((void (*)(id, SEL, id))objc_msgSend)(logRow, NSSelectorFromString(@"setPage:"), logPage);
     id diag = sSection(@"诊断", @[logRow]);
     id visibility = sSection(nil, @[hidden]);
     Class pageClass = NSClassFromString(@"SGModPage");
     SEL init = @selector(initWithTitle:intro:sections:footer:);
     return ((id (*)(id, SEL, NSString *, NSString *, NSArray *, NSString *))objc_msgSend)(
-        [pageClass alloc], init, @"灵动岛歌词", nil, @[first, display, visibility], nil);
+        [pageClass alloc], init, @"灵动岛歌词", nil, @[first, display, visibility, diag], nil);
 }
 
 static id LyricsPageInit(id self, SEL _cmd, NSString *title, NSString *intro, NSArray *sections, NSString *footer) {

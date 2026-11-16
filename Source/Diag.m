@@ -5,19 +5,42 @@
 #import <unistd.h>
 #import <string.h>
 
-// 诊断出口：写沙盒文件 + 以 UDP 发到本机监听端（127.0.0.1:18888）。
-// UDP 无连接、非阻塞、失败即丢，绝不影响主线程与 App 行为。
+// 诊断出口：写沙盒文件 + 通过 TCP 发到本机 iSH 监听端（127.0.0.1:18890）。
+// 连接、发送、关闭都在后台串行队列；主线程只做一次入队，绝不阻塞 UI。
+// 发送失败（监听端没开）就静默丢弃，不影响 App 行为。
 
-static int SGLSock = -1;
-static NSUInteger SGLSent = 0;
+static dispatch_queue_t SGLDiagQueue(void) {
+    static dispatch_queue_t q;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        q = dispatch_queue_create("sgl.diag", DISPATCH_QUEUE_SERIAL);
+    });
+    return q;
+}
 
-static void SGLEnsureSocket(void) {
-    if (SGLSock >= 0) return;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+static BOOL SGLDiagBusy = NO;
+
+static void SGLDiagSend(NSData *payload) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return;
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    SGLSock = fd;
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(18890);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        const char *bytes = payload.bytes;
+        size_t left = payload.length;
+        while (left > 0) {
+            ssize_t n = send(fd, bytes, left, 0);
+            if (n <= 0) break;
+            bytes += n;
+            left -= (size_t)n;
+        }
+    }
+    close(fd);
 }
 
 void SGLLogLine(NSString *line) {
@@ -39,23 +62,12 @@ void SGLLogLine(NSString *line) {
         [[row dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:NO];
     }
 
-    // 网络：限速，最多每 200ms 发一条，超了直接丢
-    static CFAbsoluteTime lastSent = 0;
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    if (now - lastSent < 0.2) return;
-    lastSent = now;
-    if (SGLSent > 50000) return;
-
-    SGLEnsureSocket();
-    if (SGLSock < 0) return;
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(18888);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // 网络：同一时刻只允许一个在途发送，忙则丢弃（日志不值得拖慢任何东西）
+    if (SGLDiagBusy) return;
+    SGLDiagBusy = YES;
     NSData *payload = [row dataUsingEncoding:NSUTF8StringEncoding];
-    if (sendto(SGLSock, payload.bytes, payload.length, 0,
-               (struct sockaddr *)&addr, sizeof(addr)) > 0) {
-        SGLSent++;
-    }
+    dispatch_async(SGLDiagQueue(), ^{
+        SGLDiagSend(payload);
+        SGLDiagBusy = NO;
+    });
 }

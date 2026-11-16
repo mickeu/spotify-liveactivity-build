@@ -32,10 +32,11 @@ struct ClockDriver<Moving: View, Fallback: View>: View {
 
     var body: some View {
         if let modifier = ClockRuntime.modifier {
-            opened(moving, modifier: modifier)
-                .offset(y: verticalReturn)
+            // `any ViewModifier` 不能直接当作 View，且需要存在体打开成具体 M。
+            // 转成 AnyView 后分支两侧类型一致，桥接失败时不进入这里的巨型布局。
+            AnyView(opened(moving, modifier: modifier).offset(y: verticalReturn))
         } else {
-            fallback
+            AnyView(fallback)
         }
     }
 

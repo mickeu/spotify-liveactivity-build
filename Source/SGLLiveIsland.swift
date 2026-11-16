@@ -206,7 +206,7 @@ public final class SGLLiveIsland: NSObject {
 
         // 换行才重新解析并定 lineStart（避免暂停期间行首漂移）
         if idx != cachedLineIndex || cachedInfo == nil {
-            let lineStartMs = (cachedLines[idx] as? NSObject)?.value(forKey: "start") as? Int ?? pos
+            let lineStartMs = int(cachedLines[idx], "start") ?? pos
             let elapsed = max(Double(pos - lineStartMs) / 1000.0, 0)
             var info = parse(line: cachedLines[idx], lines: cachedLines, index: idx, posMs: pos)
             info.lineStart = Date().addingTimeInterval(-elapsed)
@@ -223,6 +223,30 @@ public final class SGLLiveIsland: NSObject {
         deliver(info)
     }
 
+    /// 安全 KVC：不存在的 key 会让 value(forKey:) 抛异常直接闪退，
+    /// 所以先确认 getter 真的在，再取值。
+    private static func value(_ obj: AnyObject?, _ key: String) -> AnyObject? {
+        guard let nso = obj as? NSObject else { return nil }
+        guard nso.responds(to: NSSelectorFromString(key)) else { return nil }
+        return nso.value(forKey: key)
+    }
+
+    private static func int(_ obj: AnyObject?, _ key: String) -> Int? {
+        value(obj, key) as? Int
+    }
+
+    private static func string(_ obj: AnyObject?, _ key: String) -> String? {
+        value(obj, key) as? String
+    }
+
+    private static func bool(_ obj: AnyObject?, _ key: String) -> Bool? {
+        value(obj, key) as? Bool
+    }
+
+    private static func array(_ obj: AnyObject?, _ key: String) -> [AnyObject]? {
+        value(obj, key) as? [AnyObject]
+    }
+
     private static func trackID() -> String? {
         guard let f = fnTrack, let s = f() else { return nil }
         return s as String
@@ -230,9 +254,8 @@ public final class SGLLiveIsland: NSObject {
 
     private static func isPaused() -> Bool? {
         guard let f = fnPlayer, let player = f() else { return nil }
-        guard let nso = player as? NSObject,
-              let st = nso.value(forKey: "state") as? NSObject else { return nil }
-        return st.value(forKey: "isPaused") as? Bool
+        guard let st = value(player, "state") as AnyObject? else { return nil }
+        return bool(st, "isPaused")
     }
 
     // MARK: - 解析一行（只在换行时调用）
@@ -250,9 +273,9 @@ public final class SGLLiveIsland: NSObject {
         var info = LineInfo()
         guard let nso = line as? NSObject else { return info }
 
-        let startMs = nso.value(forKey: "start") as? Int ?? posMs
-        var endMs = nso.value(forKey: "end") as? Int ?? 0
-        let words = nso.value(forKey: "words") as? [AnyObject] ?? []
+        let startMs = int(nso, "start") ?? posMs
+        var endMs = int(nso, "end") ?? 0
+        let words = array(nso, "words") ?? []
 
         if words.isEmpty {
             info.text = lineText(nso)
@@ -263,11 +286,10 @@ public final class SGLLiveIsland: NSObject {
             times.reserveCapacity(48)
 
             for w in words {
-                guard let wso = w as? NSObject,
-                      let wt = wso.value(forKey: "text") as? String, !wt.isEmpty else { continue }
-                let ws = wso.value(forKey: "start") as? Int ?? startMs
-                let we = wso.value(forKey: "end") as? Int ?? ws
-                let joined = wso.value(forKey: "joined") as? Bool ?? false
+                guard let wt = string(w, "text"), !wt.isEmpty else { continue }
+                let ws = int(w, "start") ?? startMs
+                let we = int(w, "end") ?? ws
+                let joined = bool(w, "joined") ?? false
                 let base = Double(ws - startMs) / 1000.0
                 let span = max(Double(we - ws) / 1000.0, 0.02)
                 let n = wt.count
@@ -286,8 +308,7 @@ public final class SGLLiveIsland: NSObject {
         }
 
         if endMs <= startMs {
-            let nextStart = index + 1 < lines.count
-                ? ((lines[index + 1] as? NSObject)?.value(forKey: "start") as? Int ?? 0) : 0
+            let nextStart = index + 1 < lines.count ? (int(lines[index + 1], "start") ?? 0) : 0
             endMs = nextStart > startMs ? nextStart : startMs + 4000
         }
         info.duration = max(Double(endMs - startMs) / 1000.0, 0.5)
@@ -301,13 +322,12 @@ public final class SGLLiveIsland: NSObject {
 
     private static func lineText(_ line: AnyObject) -> String {
         if let f = fnLineText, let s = f(line) { return s as String }
-        guard let nso = line as? NSObject else { return "" }
-        let words = nso.value(forKey: "words") as? [AnyObject] ?? []
+        guard line is NSObject else { return "" }
+        let words = array(line, "words") ?? []
         var out = ""
         for w in words {
-            guard let wso = w as? NSObject else { continue }
-            out += wso.value(forKey: "text") as? String ?? ""
-            if !(wso.value(forKey: "joined") as? Bool ?? false) { out += " " }
+            out += string(w, "text") ?? ""
+            if !(bool(w, "joined") ?? false) { out += " " }
         }
         return out.trimmingCharacters(in: .whitespaces)
     }

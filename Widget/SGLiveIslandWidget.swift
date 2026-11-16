@@ -16,34 +16,32 @@ import WidgetKit
 // MARK: - 字宽（等宽字体，实测一次后常量级缓存）
 
 private enum Metrics {
-    // 只会出现 (2 种字符 × 3 档字号) = 6 项，绝不增长
-    private static var cache: [String: CGFloat] = [:]
-
+    // 不用可变缓存：widget 渲染随时可能重入，静态可变字典既不安全也没必要，
+    // 单次测宽只有微秒级开销。
     static func font(_ size: CGFloat) -> UIFont {
         UIFont.monospacedSystemFont(ofSize: size, weight: .semibold)
     }
 
     static func width(ascii: Bool, size: CGFloat) -> CGFloat {
-        let key = ascii ? "a\(Int(size))" : "c\(Int(size))"
-        if let v = cache[key] { return v }
         let probe = ascii ? "a" : "中"
-        let w = (probe as NSString).size(withAttributes: [.font: font(size)]).width
-        cache[key] = w
-        return w
+        return (probe as NSString).size(withAttributes: [.font: font(size)]).width
     }
 
     static func width(_ c: Character, size: CGFloat) -> CGFloat {
         width(ascii: c.isASCII, size: size)
     }
 
-    /// 前 p 个字（p 可带小数）的累计宽度
+    /// 前 p 个字（p 可带小数）的累计宽度。
+    /// 等宽字体下只有「全角 / ASCII」两种宽度，所以每帧只测两次。
     static func offset(_ chars: [Character], upTo p: Double, size: CGFloat) -> CGFloat {
         guard !chars.isEmpty else { return 0 }
         let whole = min(max(Int(p), 0), chars.count)
+        let cjk = width(ascii: false, size: size)
+        let ascii = width(ascii: true, size: size)
         var w: CGFloat = 0
-        for i in 0..<whole { w += width(chars[i], size: size) }
+        for i in 0..<whole { w += chars[i].isASCII ? ascii : cjk }
         if whole < chars.count {
-            w += width(chars[whole], size: size) * CGFloat(p - Double(whole))
+            w += (chars[whole].isASCII ? ascii : cjk) * CGFloat(p - Double(whole))
         }
         return w
     }
@@ -232,12 +230,7 @@ private struct ExpandedLyrics: View {
     }
 
     private func highlighted(_ sung: Int) -> AttributedString {
-        var a = AttributedString(state.line.isEmpty ? "♪" : state.line)
-        let total = a.characters.count
-        let idx = a.index(a.startIndex, offsetBy: min(max(sung, 0), total))
-        a[a.startIndex..<idx].foregroundColor = lyricColor(state)
-        a[idx...].foregroundColor = Color.white.opacity(0.42)
-        return a
+        split(lyricColor(state))
     }
 }
 
@@ -293,13 +286,23 @@ private struct LockScreenView: View {
     }
 
     private func highlighted(_ sung: Int) -> AttributedString {
-        var a = AttributedString(state.line.isEmpty ? "♪" : state.line)
-        let total = a.characters.count
-        let idx = a.index(a.startIndex, offsetBy: min(max(sung, 0), total))
-        a[a.startIndex..<idx].foregroundColor = lyricColor(state)
-        a[idx...].foregroundColor = Color.white.opacity(0.42)
-        return a
+        split(lyricColor(state))
     }
+}
+
+// MARK: - 分段着色
+
+/// 把一行按「已唱 / 未唱」拼成两段 AttributedString。
+/// 不用 index(offsetBy:) 做索引运算，整段替换零越界风险。
+@available(iOS 17.0, *)
+private func split(_ state: SGLyricsAttributes.ContentState, _ sung: Int, _ sungColor: Color) -> AttributedString {
+    let text = state.line.isEmpty ? "♪" : state.line
+    let cut = min(max(sung, 0), text.count)
+    var head = AttributedString(String(text.prefix(cut)))
+    head.foregroundColor = sungColor
+    var tail = AttributedString(String(text.dropFirst(cut)))
+    tail.foregroundColor = Color.white.opacity(0.42)
+    return head + tail
 }
 
 // MARK: - 颜色

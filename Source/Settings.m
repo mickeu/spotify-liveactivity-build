@@ -85,24 +85,24 @@ static id SwitchRow(NSString *title, NSString *key) {
 }
 
 static id SettingsPage(void) {
-    NSArray *widthNames = @[@"Standard", @"Longest"];
-    NSArray *fontNames = @[@"Small", @"Standard", @"Large"];
-    NSArray *hideNames = @[@"Never", @"5 seconds", @"30 seconds", @"60 seconds", @"5 minutes"];
-    id width = sChoiceRow(@"Width", nil, kWidth, widthNames, 0);
-    id font = sChoiceRow(@"Font size", nil, kFontSize, fontNames, 1);
+    NSArray *widthNames = @[@"标准", @"最长"];
+    NSArray *fontNames = @[@"小", @"标准", @"大"];
+    NSArray *hideNames = @[@"不关闭", @"5 秒", @"30 秒", @"1 分钟", @"5 分钟"];
+    id width = sChoiceRow(@"宽度", nil, kWidth, widthNames, 0);
+    id font = sChoiceRow(@"字号", nil, kFontSize, fontNames, 1);
     // SGChoiceRow stores the chosen INDEX (0...4); the Swift side maps it to 0/5/30/60/300 seconds.
-    id autoHide = sChoiceRow(@"Auto close", nil, kAutoHide, hideNames, 0);
-    id active = OptionRow(@"Live Island lyrics", kEnabled);       // false when unset
-    id color = SwitchRow(@"Use cover colours", kArtworkColor);     // true when unset
-    id pause = SwitchRow(@"Hide when paused", kHideOnPause);       // true when unset
-    id hidden = OptionRow(@"Hide Live Island", kHidden);           // false when unset
+    id autoHide = sChoiceRow(@"自动关闭", nil, kAutoHide, hideNames, 0);
+    id active = OptionRow(@"灵动岛歌词", kEnabled);       // false when unset
+    id color = SwitchRow(@"歌词使用封面颜色", kArtworkColor);     // true when unset
+    id pause = SwitchRow(@"暂停时隐藏", kHideOnPause);       // true when unset
+    id hidden = OptionRow(@"隐藏灵动岛", kHidden);           // false when unset
     id first = sSection(nil, @[active, width, font]);
-    id display = sSection(@"Display", @[color, pause, autoHide]);
+    id display = sSection(@"显示", @[color, pause, autoHide]);
     id visibility = sSection(nil, @[hidden]);
     Class pageClass = NSClassFromString(@"SGModPage");
     SEL init = @selector(initWithTitle:intro:sections:footer:);
     return ((id (*)(id, SEL, NSString *, NSString *, NSArray *, NSString *))objc_msgSend)(
-        [pageClass alloc], init, @"Live Island lyrics", nil, @[first, display, visibility], nil);
+        [pageClass alloc], init, @"灵动岛歌词", nil, @[first, display, visibility], nil);
 }
 
 static id LyricsPageInit(id self, SEL _cmd, NSString *title, NSString *intro, NSArray *sections, NSString *footer) {
@@ -112,7 +112,7 @@ static id LyricsPageInit(id self, SEL _cmd, NSString *title, NSString *intro, NS
     SGLLog([NSString stringWithFormat:@"attach to page '%@' (%lu sections)",
             title, (unsigned long)sections.count]);
     NSMutableArray *extended = [sections mutableCopy];
-    id entry = sPageRow(@"Live Island lyrics", ^UIViewController *{ return SettingsPage(); });
+    id entry = sPageRow(@"灵动岛歌词", ^UIViewController *{ return SettingsPage(); });
     [extended addObject:sSection(nil, @[entry])];
     return sOriginalInit(self, _cmd, title, intro, extended, footer);
 }

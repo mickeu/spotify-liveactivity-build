@@ -240,6 +240,8 @@ public final class SGLLiveIsland: NSObject {
     private static var sampleUptime: TimeInterval?
     private static var samplePaused = true
     private static var suppressedTrack: String?
+    private static var diagTrack: String?
+    private static var diagLineIndex = -1
 
     private static func tick() {
         guard Defaults.isOn else { return }
@@ -265,6 +267,7 @@ public final class SGLLiveIsland: NSObject {
             return
         }
         if cachedTrack != track {
+            diagLineIndex = -1
             dropActivity()
             cachedTrack = track
             cachedLines.removeAll(keepingCapacity: false)
@@ -313,6 +316,11 @@ public final class SGLLiveIsland: NSObject {
             pausedSince = nil
             pauseSuppressed = false
         }
+        if diagTrack != track {
+            diagTrack = track
+            let count = (fnLines?(track as NSString) as? [AnyObject])?.count ?? -1
+            diag("track=\(track) lines=\(count)")
+        }
         if cachedLines.isEmpty && now.timeIntervalSince(lastLinesAttempt) >= 3 {
             lastLinesAttempt = now
             if let raw = fnLines?(track as NSString), raw.count <= 4096 {
@@ -333,6 +341,10 @@ public final class SGLLiveIsland: NSObject {
             cachedInfo = parse(line: cachedLines[idx], lines: cachedLines, index: idx, posMs: pos)
             cachedLineIndex = idx
             lastSentKey = nil
+        }
+        if let info = cachedInfo, diagLineIndex != idx {
+            diagLineIndex = idx
+            diag("idx=\(idx) dur=\(String(format: "%.2f", info.duration)) chars=\(info.text.count) times=\(info.times.count) text=\(info.text.prefix(24))")
         }
         let key = "\(track)#\(idx)#\(paused)"
         if key == lastFailedKey && now < retryAfter { return }

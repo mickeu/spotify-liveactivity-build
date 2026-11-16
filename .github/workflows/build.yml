@@ -1,0 +1,32 @@
+name: Build Live Island
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --find swiftc
+
+      - name: Build
+        run: bash scripts/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liveisland
+          path: dist/
+          if-no-files-found: error

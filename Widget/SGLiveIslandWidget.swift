@@ -55,6 +55,8 @@ struct SGLyricsLiveActivity: Widget {
             ClockLyricLine(state: context.state, compact: false)
                 .activityBackgroundTint(.black.opacity(0.45))
                 .activitySystemActionForegroundColor(.white)
+                // 显式指定点击目标，避免系统按 entitlements 猜成别的 App。
+                .widgetURL(URL(string: "spotify://"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {

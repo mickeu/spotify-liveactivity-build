@@ -186,9 +186,20 @@ public final class SGLLiveIsland: NSObject {
             try? FileManager.default.contentsOfDirectory(atPath: $0)
         } ?? []
         let auth = ActivityAuthorizationInfo()
-        diag("start iOS \(UIDevice.current.systemVersion) enabled=\(auth.areActivitiesEnabled) "
-             + "appex=\(plugIns.filter { $0.hasSuffix(".appex") }.joined(separator: ",")) "
-             + "ours=\(Activity<SGLyricsAttributes>.activities.count)")
+        var appexIds: [String] = []
+        if let root = Bundle.main.builtInPlugInsPath {
+            for name in plugIns where name.hasSuffix(".appex") {
+                let path = (root as NSString).appendingPathComponent(name) + "/Info.plist"
+                if let dict = NSDictionary(contentsOfFile: path),
+                   let bid = dict["CFBundleIdentifier"] as? String {
+                    appexIds.append("\(name)=\(bid)")
+                }
+            }
+        }
+        let installed = Bundle.main.bundleIdentifier ?? "?"
+        diag("start iOS \(UIDevice.current.systemVersion) host=\(installed) "
+             + "auth=\(auth.areActivitiesEnabled) ours=\(Activity<SGLyricsAttributes>.activities.count) "
+             + "appex=[\(appexIds.joined(separator: " "))]")
         settingsFingerprint = settingsKey()
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main

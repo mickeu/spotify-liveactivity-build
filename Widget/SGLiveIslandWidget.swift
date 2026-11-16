@@ -11,18 +11,18 @@ import WidgetKit
 private enum LyricMetrics {
     static func fontSize(_ step: Int, big: Bool) -> CGFloat {
         switch step {
-        case 0: return big ? 17 : 12
-        case 2: return big ? 23 : 15
-        default: return big ? 20 : 13
+        case 0: return big ? 21 : 15
+        case 2: return big ? 28 : 19
+        default: return big ? 24 : 16
         }
     }
 
     static func uiFont(_ step: Int, big: Bool) -> UIFont {
-        UIFont.monospacedSystemFont(ofSize: fontSize(step, big: big), weight: .semibold)
+        UIFont.systemFont(ofSize: fontSize(step, big: big), weight: .semibold)
     }
 
     static func font(_ step: Int, big: Bool) -> Font {
-        .system(size: fontSize(step, big: big), weight: .semibold, design: .monospaced)
+        .system(size: fontSize(step, big: big), weight: .semibold)
     }
 
     static func width(_ text: String, step: Int, big: Bool) -> CGFloat {
@@ -144,19 +144,19 @@ private struct LockScreenLyrics: View {
         VStack(spacing: 3) {
             if !state.nextLine.isEmpty {
                 Text(state.nextLine)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.38))
                     .lineLimit(1)
             }
             Text(mainLine)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(lyricColor(state))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             if !state.translation.isEmpty {
                 Text(state.translation)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
             }
         }
@@ -180,13 +180,13 @@ private struct ExpandedLyrics: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(mainLine)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 25, weight: .semibold))
                 .foregroundStyle(lyricColor(state))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             if !state.translation.isEmpty {
                 Text(state.translation)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
             }

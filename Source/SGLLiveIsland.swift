@@ -26,6 +26,7 @@ public final class SGLLiveIsland: NSObject {
     private typealias PositionMsFn    = @convention(c) () -> Int
     private typealias LeadLineFn      = @convention(c) (NSArray, Int) -> Int
     private typealias PlayingTrackFn  = @convention(c) () -> NSString?
+    private typealias RequestLyricsFn = @convention(c) (NSString) -> Void
     private typealias PlayerFn        = @convention(c) () -> AnyObject?
     private typealias LineTextFn      = @convention(c) (AnyObject) -> NSString?
     private typealias ColorFn         = @convention(c) () -> AnyObject?
@@ -34,6 +35,7 @@ public final class SGLLiveIsland: NSObject {
     private static var fnPos: PositionMsFn?
     private static var fnLead: LeadLineFn?
     private static var fnTrack: PlayingTrackFn?
+    private static var fnRequestLyrics: RequestLyricsFn?
     private static var fnPlayer: PlayerFn?
     private static var fnLineText: LineTextFn?
     private static var fnAccent: ColorFn?
@@ -57,6 +59,7 @@ public final class SGLLiveIsland: NSObject {
         fnPos = b
         fnLead = c
         fnTrack = symbol("SGKaraokePlayingTrack", PlayingTrackFn.self)
+        fnRequestLyrics = symbol("SGKaraokeRequestLyrics", RequestLyricsFn.self)
         fnPlayer = symbol("SGKaraokePlayer", PlayerFn.self)
         fnLineText = symbol("SGKaraokeLineText", LineTextFn.self)
         fnAccent = symbol("SGAccentColor", ColorFn.self)
@@ -240,6 +243,7 @@ public final class SGLLiveIsland: NSObject {
     private static var sampleUptime: TimeInterval?
     private static var samplePaused = true
     private static var suppressedTrack: String?
+    private static var lyricsRequests = 0
     private static var diagTrack: String?
     private static var diagLineIndex = -1
 
@@ -267,6 +271,7 @@ public final class SGLLiveIsland: NSObject {
             return
         }
         if cachedTrack != track {
+            lyricsRequests = 0
             diagLineIndex = -1
             dropActivity()
             cachedTrack = track
@@ -323,6 +328,12 @@ public final class SGLLiveIsland: NSObject {
         }
         if cachedLines.isEmpty && now.timeIntervalSince(lastLinesAttempt) >= 3 {
             lastLinesAttempt = now
+            // 插件只在有页面请求过歌词时才有行；后台/没人打开歌词页就一直是 nil。
+            if lyricsRequests < 3, let ask = fnRequestLyrics {
+                lyricsRequests += 1
+                ask(track)
+                diag("request lyrics #\(lyricsRequests) for \(track)")
+            }
             if let raw = fnLines?(track as NSString), raw.count <= 4096 {
                 cachedLines = raw as? [AnyObject] ?? []
             }

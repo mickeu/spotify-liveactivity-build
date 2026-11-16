@@ -137,7 +137,7 @@ private struct IslandLine: View {
             .fixedSize()
 
         return Group {
-            if scrollable, ClockDriver<Text, Text>.isAvailable {
+            if scrollable, ClockSupport.isAvailable {
                 ClockDriver(
                     moving: label
                         .frame(width: 2 * radius, height: 2 * radius, alignment: .top)

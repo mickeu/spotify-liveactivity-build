@@ -89,3 +89,9 @@ private enum ClockRuntime {
         }
     }
 }
+
+/// 非泛型入口，避免调用处被迫写明泛型参数。
+@available(iOS 16.1, *)
+enum ClockSupport {
+    static var isAvailable: Bool { ClockRuntime.available }
+}

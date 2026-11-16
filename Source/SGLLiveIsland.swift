@@ -262,6 +262,7 @@ public final class SGLLiveIsland: NSObject {
     private static var suppressedTrack: String?
     private static var lyricsRequests = 0
     private static var debugTag = ""
+    private static var hadLine = false
     private static var diagTrack: String?
     private static var diagLineIndex = -1
 
@@ -291,7 +292,9 @@ public final class SGLLiveIsland: NSObject {
         if cachedTrack != track {
             lyricsRequests = 0
             diagLineIndex = -1
-            dropActivity()
+            hadLine = false
+            debugTag = ""
+            // 不结束活动：重新 request 需要前台，后台会失败导致整张卡消失。
             cachedTrack = track
             cachedLines.removeAll(keepingCapacity: false)
             cachedInfo = nil
@@ -357,6 +360,7 @@ public final class SGLLiveIsland: NSObject {
             }
         }
         guard !cachedLines.isEmpty else {
+            if hadLine { return }
             // 还没拿到歌词：把状态画到岛上，便于在不连设备的情况下定位。
             let tag = "L0 r\(lyricsRequests) p\(paused ? 1 : 0)"
             if debugTag != tag {
@@ -377,6 +381,7 @@ public final class SGLLiveIsland: NSObject {
             if cachedInfo != nil {
                 cachedInfo = nil
                 cachedLineIndex = -1
+                if hadLine { return }
                 let tag = "L\(cachedLines.count) i-1"
                 if debugTag != tag {
                     debugTag = tag
@@ -393,6 +398,7 @@ public final class SGLLiveIsland: NSObject {
             return
         }
         if idx != cachedLineIndex || cachedInfo == nil {
+            hadLine = true
             cachedInfo = parse(line: cachedLines[idx], lines: cachedLines, index: idx, posMs: pos)
             cachedLineIndex = idx
             lastSentKey = nil

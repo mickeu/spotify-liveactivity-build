@@ -44,13 +44,14 @@ private func lyricColor(_ s: SGLyricsAttributes.ContentState) -> Color {
 /// 两侧渐隐，灵动歌词的 leftFade / rightFade
 private struct EdgeFade: ViewModifier {
     var width: CGFloat = 10
+    var span: CGFloat = 60
     func body(content: Content) -> some View {
         content.mask(
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0),
-                    .init(color: .black, location: width / 62.0),
-                    .init(color: .black, location: 1 - width / 62.0),
+                    .init(color: .black, location: min(0.45, width / max(span, 1))),
+                    .init(color: .black, location: max(0.55, 1 - width / max(span, 1))),
                     .init(color: .clear, location: 1)
                 ],
                 startPoint: .leading, endPoint: .trailing
@@ -76,16 +77,28 @@ struct SGLyricsLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
-                    LockScreenLyrics(state: context.state, expanded: true)
+                    if context.state.islandHidden {
+                        Color.clear.frame(height: 0)
+                    } else {
+                        LockScreenLyrics(state: context.state, expanded: true)
+                    }
                 }
             } compactLeading: {
-                IslandLine(state: context.state)
+                if context.state.islandHidden {
+                    Color.clear
+                } else {
+                    IslandLine(state: context.state)
+                }
             } compactTrailing: {
                 EmptyView()
             } minimal: {
-                Image(systemName: context.state.paused ? "pause.fill" : "music.note")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(lyricColor(context.state))
+                if context.state.islandHidden {
+                    Color.clear
+                } else {
+                    Image(systemName: context.state.paused ? "pause.fill" : "music.note")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(lyricColor(context.state))
+                }
             }
             .keylineTint(Color(hex: context.state.accent))
             .widgetURL(URL(string: "spotify://"))
@@ -98,15 +111,25 @@ struct SGLyricsLiveActivity: Widget {
 @available(iOS 16.1, *)
 private struct IslandLine: View {
     let state: SGLyricsAttributes.ContentState
-    private let period = 3600.0
-    private let viewport: CGFloat = 60
+    private var viewport: CGFloat { state.wideIsland ? 74 : 60 }
+    private let fadeWidth: CGFloat = 10
 
     var body: some View {
         let size = Metrics.islandSize(state.fontStep)
         let lineHeight = UIFont.systemFont(ofSize: size, weight: .semibold).lineHeight
         let text = visibleText
         let textWidth = Metrics.width(text, size: size)
-        let radius = radiusFor(width: textWidth)
+        let duration = state.lineDuration
+        // 位移长度 = 内容宽 + 两侧内边距 - 视口宽（灵动歌词同式）
+        let distance = max(0, textWidth + 20 - viewport)
+        let radius = distance / (2 * .pi)
+        // 超过一行时长就停止滚动：外圈会转满一周并回卷，宁可静止也不要跳回去。
+        let elapsed = max(0, (state.paused ? (state.pausedAt ?? state.lineStart) : Date())
+            .timeIntervalSince(state.lineStart))
+        let scrollable = state.smoothScroll && !state.paused
+            && duration.isFinite && (0.2...120).contains(duration)
+            && distance > 0 && elapsed <= duration * 1.05
+
         let label = Text(text)
             .font(.system(size: size, weight: .semibold))
             .foregroundStyle(lyricColor(state))
@@ -114,47 +137,43 @@ private struct IslandLine: View {
             .fixedSize()
 
         return Group {
-            if radius > 0, !state.paused, ClockDriver<Text, Text>.isAvailable {
+            if scrollable, ClockDriver<Text, Text>.isAvailable {
                 ClockDriver(
                     moving: label
                         .frame(width: 2 * radius, height: 2 * radius, alignment: .top)
-                        .rotationEffect(.radians(phase), anchor: .center),
-                    fallback: fixed(label, lineHeight),
+                        // 外圈按周期 -T 匀速转；内圈抵消「墙钟已经转过的部分」，
+                        // 使起唱时刻恰好位于起点：inner = 2π·(t₀ mod T)/T。
+                        .rotationEffect(.radians(2 * .pi * phaseAnchor), anchor: .center),
+                    fallback: staticLine(label, lineHeight),
+                    duration: duration,
                     verticalReturn: radius - lineHeight * 0.5
                 )
             } else {
-                fixed(label, lineHeight)
+                staticLine(label, lineHeight)
             }
         }
         .frame(width: viewport, height: lineHeight, alignment: .leading)
-        .modifier(EdgeFade())
+        .modifier(EdgeFade(width: fadeWidth, span: viewport))
         .clipped()
     }
 
-    private func fixed(_ label: Text, _ lineHeight: CGFloat) -> some View {
+    private func staticLine(_ label: Text, _ lineHeight: CGFloat) -> some View {
         label.frame(width: viewport, height: lineHeight, alignment: .leading)
+    }
+
+    /// t₀ 在周期内的相位（0…1）
+    private var phaseAnchor: Double {
+        let t = state.lineDuration
+        guard t.isFinite, t > 0 else { return 0 }
+        let epoch = state.lineStart.timeIntervalSince1970
+        guard epoch.isFinite else { return 0 }
+        let m = epoch.truncatingRemainder(dividingBy: t)
+        return (m < 0 ? m + t : m) / t
     }
 
     private var visibleText: String {
         if !state.line.isEmpty { return String(state.line.prefix(200)) }
-        return state.paused ? "已暂停" : "♪"
-    }
-
-    private var phase: Double {
-        let epoch = state.lineStart.timeIntervalSince1970
-        let base = 2 * Double.pi * epoch.truncatingRemainder(dividingBy: period) / period
-        guard state.lineDuration > 0, !state.paused else { return base }
-        let fraction = min(1, max(0, Date().timeIntervalSince(state.lineStart) / state.lineDuration))
-        return base + 2 * Double.pi * fraction
-    }
-
-    private func radiusFor(width: CGFloat) -> CGFloat {
-        guard state.smoothScroll, state.lineDuration.isFinite,
-              (0.3...60).contains(state.lineDuration), width > viewport + 20 else { return 0 }
-        let distance = width + 20 - viewport
-        let radius = distance * CGFloat(period / (2 * Double.pi * state.lineDuration))
-        guard radius.isFinite, radius >= 1, radius <= 4096 else { return 0 }
-        return radius
+        return "♪"
     }
 }
 
@@ -174,12 +193,18 @@ private struct LockScreenLyrics: View {
                     .foregroundStyle(.white.opacity(0.3))
                     .lineLimit(1)
             }
-            Text(mainLine)
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(lyricColor(state))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            if !state.translation.isEmpty {
+            if state.paused && state.line.isEmpty {
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+            } else {
+                Text(mainLine)
+                    .font(.system(size: size, weight: .semibold))
+                    .foregroundStyle(lyricColor(state))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            if state.showTranslation, !state.translation.isEmpty {
                 Text(state.translation)
                     .font(.system(size: size - 3, weight: .medium))
                     .foregroundStyle(.white.opacity(0.75))
@@ -191,7 +216,7 @@ private struct LockScreenLyrics: View {
                     .foregroundStyle(.white.opacity(0.32))
                     .lineLimit(1)
             }
-            if !state.nextTranslation.isEmpty {
+            if state.showTranslation, !state.nextTranslation.isEmpty {
                 Text(state.nextTranslation)
                     .font(.system(size: size - 5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.25))
@@ -205,7 +230,7 @@ private struct LockScreenLyrics: View {
 
     private var mainLine: String {
         if !state.line.isEmpty { return String(state.line.prefix(200)) }
-        return state.paused ? "已暂停" : "♪"
+        return "♪"
     }
 }
 

@@ -24,19 +24,12 @@ struct SGLyricsAttributes: ActivityAttributes {
         /// 当前行的译文；下一行的译文。
         var translation: String
         var nextTranslation: String
-        var title: String
-        var artist: String
         var paused: Bool
 
-        /// 这一行开始的绝对时刻。extension 用 now - lineStart 得到已唱秒数。
-        /// 主 App 用「播放位置 - 行起始毫秒」反推，所以换行检测的延迟不影响滚动精度。
+        /// 这一行开始的绝对时刻。主 App 用播放器位置反推，换行检测延迟不影响滚动精度。
         var lineStart: Date
 
-        /// 每个字相对 lineStart 的起唱秒数，长度与 line.count 一致。
-        /// 快歌间隔小、慢歌间隔大，推进速度天然跟随歌词本身。
-        var wordTimes: [Double]
-
-        /// 这一行总时长（秒）。wordTimes 为空时按它均分。
+        /// 这一行总时长（秒）。滚动速度与进度都按它算。
         var lineDuration: Double
 
         /// 暂停时刻：冻结显示位置，并给 staleDate 计时。
@@ -45,22 +38,20 @@ struct SGLyricsAttributes: ActivityAttributes {
         // ── 设置（由 App 侧读取后下发）──
         /// 0 小 / 1 标准 / 2 大
         var fontStep: Int
-        /// compact 滑动窗口显示的字数（标准 8，最长 12）
-        var windowChars: Int
         /// 是否用封面主色（真时 accent 有效）
         var useArtworkColor: Bool
         /// 隐藏岛上内容，但保持实时活动与锁屏内容存在。
         var islandHidden: Bool
-        /// 旧草稿保留参数，不代表灵动歌词原实现的 refreshTime 语义。
-        /// 新滚动渲染由系统时钟效果驱动。
-        var refreshTime: Double
+        /// 灵动岛宽度：false 标准 / true 最长（对应设置项「宽度」）
+        var wideIsland: Bool
         /// 平滑滚动开关（对应它的 _smoothDI）。关掉时整行原地不滚。
         var smoothScroll: Bool
+        /// 锁屏/展开是否显示译文（对应「显示翻译」）
+        var showTranslation: Bool
         /// 主题色，6 位 hex 不带 #
         var accent: String
 
         static let defaultAccent = "1ED760"
-        static let defaultRefresh: Double = 0.2
 
     }
 }

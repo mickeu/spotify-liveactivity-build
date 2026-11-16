@@ -96,6 +96,10 @@ public final class SGLLiveIsland: NSObject {
     private static var lastSentKey: String?
     private static var lastFailedKey: String?
     private static var retryAfter = Date.distantPast
+    private static var sendRetryAfter = Date.distantPast
+    private static var pausedDiagLogged = false
+    private static var loggedUpdate = false
+    private static var loggedRequestBlock = false
     private static var lastLinesAttempt = Date.distantPast
     private static var noLyricsTrack: String?
     private static var pausedSince: Date?
@@ -122,6 +126,7 @@ public final class SGLLiveIsland: NSObject {
         static let fontSize     = "sgl.fontSize"
         static let smooth       = "sgl.smooth"
         static let hidden       = "sgl.hidden"
+        static let showTranslationKey = "sgl.showTranslation"
 
         static var isOn: Bool { UserDefaults.standard.object(forKey: enabled) as? Bool ?? false }
         /// 设置页存的是选项索引（0...4），这里映射成真实秒数。
@@ -136,18 +141,19 @@ public final class SGLLiveIsland: NSObject {
         }
         /// 隐藏岛内容但保留实时活动／锁屏。
         static var islandHidden: Bool { UserDefaults.standard.object(forKey: hidden) as? Bool ?? false }
-        static var hideOnPause: Bool { UserDefaults.standard.object(forKey: hideOnPauseKey) as? Bool ?? false }
+        /// 设置项「宽度」：0 标准 / 1 最长
+        static var wideIsland: Bool { (UserDefaults.standard.object(forKey: width) as? Int ?? 0) == 1 }
+        static var showTranslation: Bool {
+            UserDefaults.standard.object(forKey: showTranslationKey) as? Bool ?? true
+        }
+        /// 设置页用 SwitchRow（默认开），这里必须同默认，否则界面开着却不生效。
+        static var hideOnPause: Bool { UserDefaults.standard.object(forKey: hideOnPauseKey) as? Bool ?? true }
         static var useArtworkColor: Bool { UserDefaults.standard.object(forKey: artworkColor) as? Bool ?? true }
         static var fontStep: Int { UserDefaults.standard.object(forKey: fontSize) as? Int ?? 1 }
         static var smoothScroll: Bool { UserDefaults.standard.object(forKey: smooth) as? Bool ?? true }
-        /// extension 的刷新周期；暂停时放宽，省电
-        static var refreshTime: Double { smoothScroll ? 0.2 : 1.0 }
         static var tickInterval: Double {
             let v = UserDefaults.standard.object(forKey: tick) as? Double ?? 0.5
             return min(max(v, 0.25), 2.0)
-        }
-        static var windowChars: Int {
-            (UserDefaults.standard.object(forKey: width) as? Int ?? 0) == 1 ? 12 : 8
         }
     }
 
@@ -157,7 +163,7 @@ public final class SGLLiveIsland: NSObject {
     private static var settingsFingerprint = ""
 
     private static func settingsKey() -> String {
-        "\(Defaults.isOn)|\(Defaults.autoHideSeconds)|\(Defaults.hideOnPause)|\(Defaults.useArtworkColor)|\(Defaults.fontStep)|\(Defaults.smoothScroll)|\(Defaults.windowChars)|\(Defaults.tickInterval)|\(Defaults.islandHidden)"
+        "\(Defaults.isOn)|\(Defaults.autoHideSeconds)|\(Defaults.hideOnPause)|\(Defaults.useArtworkColor)|\(Defaults.fontStep)|\(Defaults.smoothScroll)|\(Defaults.tickInterval)|\(Defaults.islandHidden)|\(Defaults.wideIsland)"
     }
 
     /// 诊断日志：写在沙盒 Documents，可用沙盒穿透读回。
@@ -229,8 +235,10 @@ public final class SGLLiveIsland: NSObject {
         ) { _ in
             MainActor.assumeIsolated {
                 retryAfter = .distantPast
+                sendRetryAfter = .distantPast
                 lastFailedKey = nil
                 lastSentKey = nil
+                suppressedTrack = nil
                 tick()
             }
         })
@@ -261,8 +269,6 @@ public final class SGLLiveIsland: NSObject {
     private static var samplePaused = true
     private static var suppressedTrack: String?
     private static var lyricsRequests = 0
-    private static var debugTag = ""
-    private static var hadLine = false
     private static var diagTrack: String?
     private static var diagLineIndex = -1
 
@@ -292,8 +298,6 @@ public final class SGLLiveIsland: NSObject {
         if cachedTrack != track {
             lyricsRequests = 0
             diagLineIndex = -1
-            hadLine = false
-            debugTag = ""
             // 不结束活动：重新 request 需要前台，后台会失败导致整张卡消失。
             cachedTrack = track
             cachedLines.removeAll(keepingCapacity: false)
@@ -317,7 +321,12 @@ public final class SGLLiveIsland: NSObject {
             lastSentKey = nil
         }
         // 状态未知时不假装播放，避免在不可靠的时间轴上滚动。
-        guard let paused = isPaused() else { return }
+        let pausedState = isPaused()
+        if pausedState == nil && !pausedDiagLogged {
+            pausedDiagLogged = true
+            diag("player state unavailable; assuming playing")
+        }
+        let paused = pausedState ?? false
         let transition = samplePosition == nil || paused != samplePaused
         var seeked = false
         if let previous = samplePosition, let lastUptime = sampleUptime {
@@ -333,8 +342,24 @@ public final class SGLLiveIsland: NSObject {
             let expired = Defaults.autoHideSeconds > 0 &&
                 now.timeIntervalSince(pausedSince ?? now) >= Double(Defaults.autoHideSeconds)
             if Defaults.hideOnPause || expired {
+                // 只隐藏内容，不 end：后台无法重新 request，end 就等于卡片永久消失。
                 pauseSuppressed = true
-                dropActivity()
+                let key = "\(track)#paused"
+                if lastSentKey != key {
+                    // 没有缓存行（间奏中/首行之前）时也要真正隐藏，不能留着旧内容。
+                    var info = cachedInfo ?? LineInfo()
+                    info.text = ""
+                    info.prev = ""
+                    info.next = ""
+                    info.translation = ""
+                    info.nextTranslation = ""
+                    info.times = []
+                    info.paused = true
+                    info.duration = 1
+                    info.lineStart = now
+                    lastSentKey = key
+                    deliver(info)
+                }
                 return
             }
         } else {
@@ -359,46 +384,17 @@ public final class SGLLiveIsland: NSObject {
                 cachedLines = raw as? [AnyObject] ?? []
             }
         }
-        guard !cachedLines.isEmpty else {
-            if hadLine { return }
-            // 还没拿到歌词：把状态画到岛上，便于在不连设备的情况下定位。
-            let tag = "L0 r\(lyricsRequests) p\(paused ? 1 : 0)"
-            if debugTag != tag {
-                debugTag = tag
-                var info = LineInfo()
-                info.text = ""
-                info.times = []
-                info.duration = 4
-                info.lineStart = now
-                info.paused = paused
-                info.debug = tag
-                deliver(info)
-            }
-            return
-        }
+        // 还没有歌词：什么都不下发，界面上保持"♪"，不把诊断当歌词显示。
+        guard !cachedLines.isEmpty else { return }
         let idx = fnLead?(cachedLines as NSArray, pos) ?? -1
         guard idx >= 0, idx < cachedLines.count else {
-            if cachedInfo != nil {
-                cachedInfo = nil
-                cachedLineIndex = -1
-                if hadLine { return }
-                let tag = "L\(cachedLines.count) i-1"
-                if debugTag != tag {
-                    debugTag = tag
-                    var info = LineInfo()
-                    info.text = ""
-                    info.times = []
-                    info.duration = 4
-                    info.lineStart = now
-                    info.paused = paused
-                    info.debug = tag
-                    deliver(info)
-                }
-            }
+            // 间奏/曲末：保留当前卡，不结束；清 key 保证恢复后重发。
+            cachedInfo = nil
+            cachedLineIndex = -1
+            lastSentKey = nil
             return
         }
         if idx != cachedLineIndex || cachedInfo == nil {
-            hadLine = true
             cachedInfo = parse(line: cachedLines[idx], lines: cachedLines, index: idx, posMs: pos)
             cachedLineIndex = idx
             lastSentKey = nil
@@ -408,9 +404,10 @@ public final class SGLLiveIsland: NSObject {
             diag("idx=\(idx) dur=\(String(format: "%.2f", info.duration)) chars=\(info.text.count) times=\(info.times.count) text=\(info.text.prefix(24))")
         }
         let key = "\(track)#\(idx)#\(paused)"
-        if key == lastFailedKey && now < retryAfter { return }
+        if key == lastFailedKey && now < sendRetryAfter { return }
         guard key != lastSentKey || transition || seeked else { return }
-        guard var info = cachedInfo, !info.text.isEmpty || !info.debug.isEmpty else { return }
+        // 只为真实歌词下发；空文本只在"暂停隐藏"时由专门分支发送。
+        guard var info = cachedInfo, !info.text.isEmpty else { return }
         // 每次暂停、恢复、seek 都按播放器位置重新锚定，避免累计暂停时间。
         let startMs = int(cachedLines[idx], "start") ?? pos
         let elapsed = max((Double(pos) - Double(startMs)) / 1000, 0)
@@ -463,7 +460,6 @@ public final class SGLLiveIsland: NSObject {
         var duration: Double = 0
         var lineStart = Date()
         var paused = false
-        var debug = ""
         var translation = ""
         var nextTranslation = ""
     }
@@ -484,7 +480,7 @@ public final class SGLLiveIsland: NSObject {
             let base = max(0, min(3600, (Double(ws) - Double(startMs)) / 1000))
             let span = max(0, min(3600, (Double(we) - Double(ws)) / 1000))
             // joined 描述的是「与前一个词连接」，不是后面是否加空格。
-            if !info.text.isEmpty && !(bool(w, "joined") ?? false) && bytes < 767 {
+            if !info.text.isEmpty && !(bool(w, "joined") ?? false) && bytes < 479 {
                 info.text.append(" ")
                 info.times.append(max(info.times.last ?? 0, base))
                 bytes += 1
@@ -492,14 +488,14 @@ public final class SGLLiveIsland: NSObject {
             let n = max(bounded.count, 1)
             for (i, c) in bounded.enumerated() {
                 let count = String(c).utf8.count
-                guard bytes + count <= 768, info.times.count < 128 else { break }
+                guard bytes + count <= 480, info.times.count < 128 else { break }
                 info.text.append(c)
                 let t = base + span * Double(i) / Double(n)
                 info.times.append((max(info.times.last ?? 0, t) * 1000).rounded() / 1000)
                 bytes += count
             }
             endMs = max(endMs, we)
-            if bytes >= 768 || info.times.count >= 128 { break }
+            if bytes >= 480 || info.times.count >= 128 { break }
         }
         if endMs <= startMs {
             let next = index + 1 < lines.count ? int(lines[index + 1], "start") : nil
@@ -508,14 +504,14 @@ public final class SGLLiveIsland: NSObject {
             info.duration = max(0.5, min(3600, (Double(endMs) - Double(startMs)) / 1000))
         }
         if index > 0 {
-            info.prev = lineText(lines[index - 1])
+            info.prev = String(lineText(lines[index - 1]).prefix(80))
         }
         if index + 1 < lines.count {
-            info.next = lineText(lines[index + 1])
+            info.next = String(lineText(lines[index + 1]).prefix(80))
         }
-        info.translation = string(nso, "translation") ?? ""
+        info.translation = String((string(nso, "translation") ?? "").prefix(80))
         if index + 1 < lines.count {
-            info.nextTranslation = string(lines[index + 1], "translation") ?? ""
+            info.nextTranslation = String((string(lines[index + 1], "translation") ?? "").prefix(80))
         }
         if info.text.isEmpty, let f = fnLineText, let line = f(nso) {
             info.text = (line as String).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -535,21 +531,16 @@ public final class SGLLiveIsland: NSObject {
             nextLine: info.next,
             translation: info.translation,
             nextTranslation: info.nextTranslation,
-            title: "",
-            artist: info.text.isEmpty
-                ? (info.debug.isEmpty ? "L\(cachedLines.count)" : info.debug)
-                : "",
             paused: info.paused,
             lineStart: info.lineStart,
-            wordTimes: info.times,
             lineDuration: info.duration,
             pausedAt: info.paused ? Date() : nil,
             fontStep: Defaults.fontStep,
-            windowChars: Defaults.windowChars,
             useArtworkColor: Defaults.useArtworkColor,
             islandHidden: Defaults.islandHidden,
-            refreshTime: Defaults.refreshTime,
+            wideIsland: Defaults.wideIsland,
             smoothScroll: Defaults.smoothScroll,
+            showTranslation: Defaults.showTranslation,
             accent: accentHex(trackID: cachedTrack)
         )
         let stale: Date? = info.paused && Defaults.autoHideSeconds > 0
@@ -604,14 +595,23 @@ public final class SGLLiveIsland: NSObject {
         let content = ActivityContent(state: state, staleDate: stale)
         if let a = activity, a.activityState == .active || a.activityState == .stale {
             await a.update(content)
+            if !loggedUpdate {
+                loggedUpdate = true
+                diag("update ok state=\(a.activityState.rawValue)")
+            }
             return
         }
         // 这里不假定后台音频资格允许 request，授权/前后台失败走退避。
-        guard ActivityAuthorizationInfo().areActivitiesEnabled,
-              UIApplication.shared.applicationState == .active,
-              !(bridgeIsShowing?() ?? false) else {
+        let auth = ActivityAuthorizationInfo().areActivitiesEnabled
+        let foreground = UIApplication.shared.applicationState == .active
+        let bridgeBusy = bridgeIsShowing?() ?? false
+        guard auth, foreground, !bridgeBusy else {
+            if !loggedRequestBlock {
+                loggedRequestBlock = true
+                diag("request blocked auth=\(auth) fg=\(foreground) bridge=\(bridgeBusy)")
+            }
             lastFailedKey = key
-            retryAfter = Date().addingTimeInterval(10)
+            sendRetryAfter = Date().addingTimeInterval(10)
             if lastSentKey == key { lastSentKey = nil }
             return
         }
@@ -625,9 +625,12 @@ public final class SGLLiveIsland: NSObject {
             activity = newActivity
             lastFailedKey = nil
             retryAfter = .distantPast
+            sendRetryAfter = .distantPast
+            diag("activity created id=\(newActivity.id)")
         } catch {
+            diag("request failed: \(error.localizedDescription)")
             lastFailedKey = key
-            retryAfter = Date().addingTimeInterval(10)
+            sendRetryAfter = Date().addingTimeInterval(10)
             if lastSentKey == key { lastSentKey = nil }
             log.error("request failed: \(error.localizedDescription, privacy: .public)")
         }

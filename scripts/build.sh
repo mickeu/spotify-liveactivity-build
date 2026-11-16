@@ -30,7 +30,6 @@ echo "==> 2/3 SGLiveIsland.dylib"
   -framework CoreGraphics -framework QuartzCore \
   -Xlinker -install_name -Xlinker @rpath/SGLiveIsland.dylib \
   -o "$OUT/SGLiveIsland.dylib" \
-  "$ROOT/Shared/LyricMotion.swift" \
   "$ROOT/Shared/SGLyricsAttributes.swift" \
   "$ROOT/Source/SGLLiveIsland.swift" \
   "$OUT/.obj/Bootstrap.o" "$OUT/.obj/Settings.o" "$OUT/.obj/Artwork.o"

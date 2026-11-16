@@ -12,6 +12,7 @@ static NSString *const kArtworkColor = @"sgl.artworkColor";
 static NSString *const kHideOnPause = @"sgl.hideOnPause";
 static NSString *const kAutoHide = @"sgl.autoHide";
 static NSString *const kHidden = @"sgl.hidden";
+static NSString *const kTranslation = @"sgl.showTranslation";
 static NSString *const kLyricsTitle = @"Lyrics";
 static NSString *const kLockScreenLyricsKey = @"spotifyglass.lockScreenLyrics";
 
@@ -95,9 +96,10 @@ static id SettingsPage(void) {
     id active = OptionRow(@"灵动岛歌词", kEnabled);       // false when unset
     id color = SwitchRow(@"歌词使用封面颜色", kArtworkColor);     // true when unset
     id pause = SwitchRow(@"暂停时隐藏", kHideOnPause);       // true when unset
+    id translation = SwitchRow(@"显示翻译", kTranslation);   // true when unset
     id hidden = OptionRow(@"隐藏灵动岛", kHidden);           // false when unset
     id first = sSection(nil, @[active, width, font]);
-    id display = sSection(@"显示", @[color, pause, autoHide]);
+    id display = sSection(@"显示", @[color, translation, pause, autoHide]);
     id visibility = sSection(nil, @[hidden]);
     Class pageClass = NSClassFromString(@"SGModPage");
     SEL init = @selector(initWithTitle:intro:sections:footer:);

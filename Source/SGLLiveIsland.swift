@@ -177,20 +177,7 @@ public final class SGLLiveIsland: NSObject {
     /// 诊断日志：写在沙盒 Documents，可用沙盒穿透读回。
     /// 只在启动/关键状态变化时写，不随 tick 刷。
     static func diag(_ line: String) {
-        let path = NSHomeDirectory() + "/Documents/sgl.log"
-        let text = "\(Date()) \(line)\n"
-        guard let data = text.data(using: .utf8) else { return }
-        let fm = FileManager.default
-        if let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int, size > 64 * 1024 {
-            try? fm.removeItem(atPath: path)
-        }
-        if let h = FileHandle(forWritingAtPath: path) {
-            defer { try? h.close() }
-            try? h.seekToEnd()
-            try? h.write(contentsOf: data)
-        } else {
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
+        SGLLogLine("\(Date()) \(line)")
     }
 
     @objc public static func start() {

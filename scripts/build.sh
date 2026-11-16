@@ -15,7 +15,7 @@ mkdir -p "$OUT/SGLiveIslandWidget.appex" "$OUT/.obj"
 echo "==> SDK: $SDK"
 
 echo "==> 1/3 ObjC 构造器"
-for f in Bootstrap Settings Artwork; do
+for f in Bootstrap Settings Artwork Diag; do
   "$CLANG" -c "$ROOT/Source/$f.m" -o "$OUT/.obj/$f.o" \
     -target arm64-apple-ios16.2 -isysroot "$SDK" -fobjc-arc -O2 -Wall -I "$ROOT/Source"
 done

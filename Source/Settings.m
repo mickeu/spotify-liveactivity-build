@@ -33,6 +33,37 @@ static BOOL sInstalled;
 
 static BOOL HasLockScreenLyricsRow(NSArray *sections);
 
+
+/// 直接展示沙盒里的诊断日志，避免依赖外部工具才能取日志。
+@interface SGLLogViewController : UIViewController
+@end
+
+@implementation SGLLogViewController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"诊断日志";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    UITextView *text = [[UITextView alloc] initWithFrame:self.view.bounds];
+    text.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    text.editable = NO;
+    text.alwaysBounceVertical = YES;
+    text.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    text.textContainerInset = UIEdgeInsetsMake(12, 12, 12, 12);
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/sgl.log"];
+    NSString *body = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+    text.text = body.length ? body : @"（还没有日志：插件可能没加载，或还没到写日志的时机）";
+    UIBarButtonItem *copy = [[UIBarButtonItem alloc] initWithTitle:@"复制"
+        style:UIBarButtonItemStylePlain target:self action:@selector(sg_copy)];
+    self.navigationItem.rightBarButtonItem = copy;
+    [self.view addSubview:text];
+}
+- (void)sg_copy {
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/sgl.log"];
+    NSString *body = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] ?: @"";
+    UIPasteboard.generalPasteboard.string = body;
+}
+@end
+
 static void SGLLog(NSString *line) {
     static NSString *path;
     static dispatch_once_t once;
@@ -100,6 +131,11 @@ static id SettingsPage(void) {
     id hidden = OptionRow(@"隐藏灵动岛", kHidden);           // false when unset
     id first = sSection(nil, @[active, width, font]);
     id display = sSection(@"显示", @[color, translation, pause, autoHide]);
+    id logRow = [[NSClassFromString(@"SGModRow") alloc] init];
+    ((void (*)(id, SEL, id))objc_msgSend)(logRow, NSSelectorFromString(@"setTitle:"), @"查看日志");
+    void (^logPage)(void) = ^UIViewController *{ return [[SGLLogViewController alloc] init]; };
+    ((void (*)(id, SEL, id))objc_msgSend)(logRow, NSSelectorFromString(@"setPage:"), logPage);
+    id diag = sSection(@"诊断", @[logRow]);
     id visibility = sSection(nil, @[hidden]);
     Class pageClass = NSClassFromString(@"SGModPage");
     SEL init = @selector(initWithTitle:intro:sections:footer:);

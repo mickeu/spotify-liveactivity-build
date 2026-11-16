@@ -228,7 +228,7 @@ public final class SGLLiveIsland: NSObject {
     private static func value(_ obj: AnyObject?, _ key: String) -> AnyObject? {
         guard let nso = obj as? NSObject else { return nil }
         guard nso.responds(to: NSSelectorFromString(key)) else { return nil }
-        return nso.value(forKey: key)
+        return nso.value(forKey: key) as AnyObject?
     }
 
     private static func int(_ obj: AnyObject?, _ key: String) -> Int? {

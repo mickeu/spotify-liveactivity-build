@@ -20,6 +20,8 @@ struct SGLyricsAttributes: ActivityAttributes {
         var line: String
         /// 下一行，expanded / 锁屏用；没有就空串。
         var nextLine: String
+        /// 当前行的译文（灵动歌词同款布局用）；没有就空串。
+        var translation: String
         var title: String
         var artist: String
         var paused: Bool

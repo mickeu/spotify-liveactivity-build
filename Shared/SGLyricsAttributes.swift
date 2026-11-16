@@ -45,8 +45,10 @@ struct SGLyricsAttributes: ActivityAttributes {
         var windowChars: Int
         /// 是否用封面主色（真时 accent 有效）
         var useArtworkColor: Bool
-        /// TimelineView 的刷新周期（秒），由主 App 按「平滑」档位下发。
-        /// 对应灵动歌词的 refreshTime：它也是运行时算好再传给 extension 的。
+        /// 隐藏岛上内容，但保持实时活动与锁屏内容存在。
+        var islandHidden: Bool
+        /// 旧草稿保留参数，不代表灵动歌词原实现的 refreshTime 语义。
+        /// 新滚动渲染由系统时钟效果驱动。
         var refreshTime: Double
         /// 平滑滚动开关（对应它的 _smoothDI）。关掉时整行原地不滚。
         var smoothScroll: Bool
@@ -54,26 +56,7 @@ struct SGLyricsAttributes: ActivityAttributes {
         var accent: String
 
         static let defaultAccent = "1ED760"
-    static let defaultRefresh: Double = 0.2
+        static let defaultRefresh: Double = 0.2
 
-        /// 到 now 为止已唱完的字数（0…line.count）。
-        /// 纯函数，不保存状态，extension 每秒调一次即可。
-        func sungCount(at now: Date) -> Int {
-            let total = line.count
-            guard total > 0 else { return 0 }
-            let ref = paused ? (pausedAt ?? lineStart) : now
-            let elapsed = ref.timeIntervalSince(lineStart)
-            guard elapsed > 0 else { return 0 }
-
-            if !wordTimes.isEmpty {
-                // wordTimes 已按升序排好，线性扫描即可（一行最多几十个元素）
-                var n = 0
-                for t in wordTimes where t <= elapsed { n += 1 }
-                return min(n, total)
-            }
-            guard lineDuration > 0 else { return 0 }
-            let ratio = min(max(elapsed / lineDuration, 0), 1)
-            return Int(Double(total) * ratio)
-        }
     }
 }

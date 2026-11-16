@@ -16,6 +16,7 @@ import ObjectiveC
 import os
 
 @available(iOS 16.2, *)
+@MainActor
 @objc(SGLLiveIsland)
 public final class SGLLiveIsland: NSObject {
 
@@ -90,11 +91,18 @@ public final class SGLLiveIsland: NSObject {
     private static var cachedLineIndex = -1
     private static var cachedInfo: LineInfo?
     private static var lastSentKey: String?
+    private static var lastFailedKey: String?
+    private static var retryAfter = Date.distantPast
     private static var lastLinesAttempt = Date.distantPast
+    private static var noLyricsTrack: String?
     private static var pausedSince: Date?
     private static var pauseSuppressed = false
 
-    // 发送串行化：最新状态覆盖，永远只有一个 Task
+    // 发送串行化：最新状态覆盖，永远只有一个 Task。
+    // generation 用来取消旧歌/旧状态尚未完成的异步发送，避免旧歌词复活活动。
+    private static var generation = 0
+    private static var pendingGeneration = 0
+    private static var pendingKey: String?
     private static var pendingState: SGLyricsAttributes.ContentState?
     private static var pendingStale: Date?
     private static var sending = false
@@ -110,9 +118,21 @@ public final class SGLLiveIsland: NSObject {
         static let width        = "sgl.width"
         static let fontSize     = "sgl.fontSize"
         static let smooth       = "sgl.smooth"
+        static let hidden       = "sgl.hidden"
 
-        static var isOn: Bool { UserDefaults.standard.object(forKey: enabled) as? Bool ?? true }
-        static var autoHideSeconds: Int { UserDefaults.standard.object(forKey: autoHide) as? Int ?? 30 }
+        static var isOn: Bool { UserDefaults.standard.object(forKey: enabled) as? Bool ?? false }
+        /// 设置页存的是选项索引（0...4），这里映射成真实秒数。
+        static var autoHideSeconds: Int {
+            switch UserDefaults.standard.object(forKey: autoHide) as? Int ?? 0 {
+            case 1: return 5
+            case 2: return 30
+            case 3: return 60
+            case 4: return 300
+            default: return 0
+            }
+        }
+        /// 隐藏岛内容但保留实时活动／锁屏。
+        static var islandHidden: Bool { UserDefaults.standard.object(forKey: hidden) as? Bool ?? false }
         static var hideOnPause: Bool { UserDefaults.standard.object(forKey: hideOnPauseKey) as? Bool ?? false }
         static var useArtworkColor: Bool { UserDefaults.standard.object(forKey: artworkColor) as? Bool ?? true }
         static var fontStep: Int { UserDefaults.standard.object(forKey: fontSize) as? Int ?? 1 }
@@ -130,25 +150,65 @@ public final class SGLLiveIsland: NSObject {
 
     // MARK: - 生命周期
 
+    private static var observers: [NSObjectProtocol] = []
+    private static var settingsFingerprint = ""
+
+    private static func settingsKey() -> String {
+        "\(Defaults.isOn)|\(Defaults.autoHideSeconds)|\(Defaults.hideOnPause)|\(Defaults.useArtworkColor)|\(Defaults.fontStep)|\(Defaults.smoothScroll)|\(Defaults.windowChars)|\(Defaults.tickInterval)|\(Defaults.islandHidden)"
+    }
+
     @objc public static func start() {
         guard !started else { return }
         started = true
-        DispatchQueue.main.async {
-            schedule()
-            NotificationCenter.default.addObserver(
-                forName: UserDefaults.didChangeNotification, object: nil, queue: .main
-            ) { _ in schedule() }
-        }
+        settingsFingerprint = settingsKey()
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                let key = settingsKey()
+                guard key != settingsFingerprint else { return }
+                settingsFingerprint = key
+                lastSentKey = nil
+                pauseSuppressed = false
+                suppressedTrack = nil
+                schedule()
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("SGKaraokeLinesDidChangeNotification"), object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                cachedLines.removeAll(keepingCapacity: false)
+                cachedInfo = nil
+                lastLinesAttempt = .distantPast
+                lastSentKey = nil
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                retryAfter = .distantPast
+                lastFailedKey = nil
+                lastSentKey = nil
+                tick()
+            }
+        })
+        schedule()
     }
 
     private static func schedule() {
         timer?.invalidate()
         timer = nil
         guard Defaults.isOn else {
+            cachedLines.removeAll(keepingCapacity: false)
+            cachedInfo = nil
             dropActivity()
             return
         }
-        let t = Timer(timeInterval: Defaults.tickInterval, repeats: true) { _ in tick() }
+        let t = Timer(timeInterval: Defaults.tickInterval, repeats: true) { _ in
+            MainActor.assumeIsolated { tick() }
+        }
         t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -156,79 +216,114 @@ public final class SGLLiveIsland: NSObject {
 
     // MARK: - 主循环
 
+    private static var samplePosition: Int?
+    private static var sampleUptime: TimeInterval?
+    private static var samplePaused = true
+    private static var suppressedTrack: String?
+
     private static func tick() {
         guard Defaults.isOn, link() else { return }
-        guard let track = trackID(), !track.isEmpty else { return }
-        guard let pos = fnPos?(), pos >= 0 else { return }
-
-        if cachedTrack != track {
-            cachedTrack = track
-            cachedLines = []
-            cachedLineIndex = -1
-            cachedInfo = nil
-            lastSentKey = nil
-            pauseSuppressed = false
-            pausedSince = nil
-        }
-
-        // 歌词可能晚于曲目信息到达：空的时候每 3 秒重取一次，不做每 tick 查询
-        if cachedLines.isEmpty {
-            if Date().timeIntervalSince(lastLinesAttempt) > 3 {
-                lastLinesAttempt = Date()
-                cachedLines = (fnLines?(track as NSString) as? [AnyObject]) ?? []
+        let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard let track = trackID(), !track.isEmpty,
+              let pos = fnPos?(), pos >= 0, pos <= 604_800_000 else {
+            if cachedTrack != nil {
+                cachedTrack = nil
+                cachedLines.removeAll(keepingCapacity: false)
+                cachedInfo = nil
+                samplePosition = nil
+                sampleUptime = nil
+                dropActivity()
             }
-            guard !cachedLines.isEmpty else { return }
+            return
         }
-
-        let idx = fnLead?(cachedLines as NSArray, pos) ?? -1
-        guard idx >= 0, idx < cachedLines.count else { return }
-
-        let paused = isPaused() ?? false
-
+        if cachedTrack != track {
+            dropActivity()
+            cachedTrack = track
+            cachedLines.removeAll(keepingCapacity: false)
+            cachedInfo = nil
+            cachedLineIndex = -1
+            lastLinesAttempt = .distantPast
+            pausedSince = nil
+            pauseSuppressed = false
+            suppressedTrack = nil
+            samplePosition = nil
+            sampleUptime = nil
+        }
+        // 用户主动划掉的活动不在同一首歌中反复拉起。
+        if activity?.activityState == .dismissed {
+            suppressedTrack = track
+            activity = nil
+        }
+        guard suppressedTrack != track else { return }
+        if activity?.activityState == .ended {
+            activity = nil
+            lastSentKey = nil
+        }
+        // 状态未知时不假装播放，避免在不可靠的时间轴上滚动。
+        guard let paused = isPaused() else { return }
+        let transition = samplePosition == nil || paused != samplePaused
+        var seeked = false
+        if let previous = samplePosition, let lastUptime = sampleUptime {
+            let expected = samplePaused ? 0 : (uptime - lastUptime) * 1000
+            seeked = abs(Double(pos - previous) - expected) > 300
+        }
+        samplePosition = pos
+        sampleUptime = uptime
+        samplePaused = paused
         if paused {
             if pauseSuppressed { return }
-            if pausedSince == nil { pausedSince = Date() }
-            if Defaults.hideOnPause {
-                pauseSuppressed = true
-                dropActivity()
-                return
-            }
-            if let since = pausedSince, Defaults.autoHideSeconds > 0,
-               Date().timeIntervalSince(since) >= Double(Defaults.autoHideSeconds) {
+            if pausedSince == nil { pausedSince = now }
+            let expired = Defaults.autoHideSeconds > 0 &&
+                now.timeIntervalSince(pausedSince ?? now) >= Double(Defaults.autoHideSeconds)
+            if Defaults.hideOnPause || expired {
                 pauseSuppressed = true
                 dropActivity()
                 return
             }
         } else {
+            if pauseSuppressed { lastSentKey = nil }
             pausedSince = nil
             pauseSuppressed = false
         }
-
-        // 换行才重新解析并定 lineStart（避免暂停期间行首漂移）
-        if idx != cachedLineIndex || cachedInfo == nil {
-            let lineStartMs = int(cachedLines[idx], "start") ?? pos
-            let elapsed = max(Double(pos - lineStartMs) / 1000.0, 0)
-            var info = parse(line: cachedLines[idx], lines: cachedLines, index: idx, posMs: pos)
-            info.lineStart = Date().addingTimeInterval(-elapsed)
-            cachedInfo = info
-            cachedLineIndex = idx
+        if cachedLines.isEmpty && now.timeIntervalSince(lastLinesAttempt) >= 3 {
+            lastLinesAttempt = now
+            if let raw = fnLines?(track as NSString), raw.count <= 4096 {
+                cachedLines = raw as? [AnyObject] ?? []
+            }
         }
-
+        guard !cachedLines.isEmpty else { return }
+        let idx = fnLead?(cachedLines as NSArray, pos) ?? -1
+        guard idx >= 0, idx < cachedLines.count else {
+            if cachedInfo != nil {
+                cachedInfo = nil
+                cachedLineIndex = -1
+                dropActivity()
+            }
+            return
+        }
+        if idx != cachedLineIndex || cachedInfo == nil {
+            cachedInfo = parse(line: cachedLines[idx], lines: cachedLines, index: idx, posMs: pos)
+            cachedLineIndex = idx
+            lastSentKey = nil
+        }
         let key = "\(track)#\(idx)#\(paused)"
-        guard key != lastSentKey else { return }
-        lastSentKey = key
-
-        guard var info = cachedInfo else { return }
+        if key == lastFailedKey && now < retryAfter { return }
+        guard key != lastSentKey || transition || seeked else { return }
+        guard var info = cachedInfo, !info.text.isEmpty else { return }
+        // 每次暂停、恢复、seek 都按播放器位置重新锚定，避免累计暂停时间。
+        let startMs = int(cachedLines[idx], "start") ?? pos
+        let elapsed = max((Double(pos) - Double(startMs)) / 1000, 0)
+        info.lineStart = now.addingTimeInterval(-elapsed)
         info.paused = paused
+        lastSentKey = key
         deliver(info)
     }
 
-    /// 安全 KVC：不存在的 key 会让 value(forKey:) 抛异常直接闪退，
-    /// 所以先确认 getter 真的在，再取值。
+    /// 所有 KVC 经过 Bootstrap.m 的 @try/@catch；即使第三方对象的
+    /// getter 异常或版本字段缺失，也只返回 nil，不把 Spotify 一起带崩。
     private static func value(_ obj: AnyObject?, _ key: String) -> AnyObject? {
-        guard let nso = obj as? NSObject else { return nil }
-        guard nso.responds(to: NSSelectorFromString(key)) else { return nil }
-        return nso.value(forKey: key) as AnyObject?
+        SGLLiveIslandSafeValue(obj, key) as AnyObject?
     }
 
     private static func int(_ obj: AnyObject?, _ key: String) -> Int? {
@@ -272,64 +367,45 @@ public final class SGLLiveIsland: NSObject {
     private static func parse(line: AnyObject, lines: [AnyObject], index: Int, posMs: Int) -> LineInfo {
         var info = LineInfo()
         guard let nso = line as? NSObject else { return info }
-
         let startMs = int(nso, "start") ?? posMs
-        var endMs = int(nso, "end") ?? 0
+        var endMs = int(nso, "end") ?? startMs
         let words = array(nso, "words") ?? []
-
-        if words.isEmpty {
-            info.text = lineText(nso)
-        } else {
-            var chars = ""
-            var times: [Double] = []
-            chars.reserveCapacity(48)
-            times.reserveCapacity(48)
-
-            for w in words {
-                guard let wt = string(w, "text"), !wt.isEmpty else { continue }
-                let ws = int(w, "start") ?? startMs
-                let we = int(w, "end") ?? ws
-                let joined = bool(w, "joined") ?? false
-                let base = Double(ws - startMs) / 1000.0
-                let span = max(Double(we - ws) / 1000.0, 0.02)
-                let n = wt.count
-                for (i, c) in wt.enumerated() {
-                    chars.append(c)
-                    times.append(base + span * Double(i) / Double(n))
-                }
-                if !joined {
-                    chars.append(" ")
-                    times.append(base + span)
-                }
-                if we > endMs { endMs = we }
+        // 限制解析工作量和 UTF-8 字节，恶意/损坏的歌词不触发无限分配。
+        var bytes = 0
+        for w in words.prefix(256) {
+            guard let raw = string(w, "text"), !raw.isEmpty else { continue }
+            let bounded = String(raw.prefix(128))
+            let ws = int(w, "start") ?? startMs
+            let we = int(w, "end") ?? ws
+            let base = max(0, min(3600, (Double(ws) - Double(startMs)) / 1000))
+            let span = max(0, min(3600, (Double(we) - Double(ws)) / 1000))
+            // joined 描述的是「与前一个词连接」，不是后面是否加空格。
+            if !info.text.isEmpty && !(bool(w, "joined") ?? false) && bytes < 767 {
+                info.text.append(" ")
+                info.times.append(max(info.times.last ?? 0, base))
+                bytes += 1
             }
-            info.text = chars
-            info.times = times
+            let n = max(bounded.count, 1)
+            for (i, c) in bounded.enumerated() {
+                let count = String(c).utf8.count
+                guard bytes + count <= 768, info.times.count < 128 else { break }
+                info.text.append(c)
+                let t = base + span * Double(i) / Double(n)
+                info.times.append((max(info.times.last ?? 0, t) * 1000).rounded() / 1000)
+                bytes += count
+            }
+            endMs = max(endMs, we)
+            if bytes >= 768 || info.times.count >= 128 { break }
         }
-
         if endMs <= startMs {
-            let nextStart = index + 1 < lines.count ? (int(lines[index + 1], "start") ?? 0) : 0
-            endMs = nextStart > startMs ? nextStart : startMs + 4000
+            let next = index + 1 < lines.count ? int(lines[index + 1], "start") : nil
+            info.duration = next.map { max(0.5, min(3600, (Double($0) - Double(startMs)) / 1000)) } ?? 4
+        } else {
+            info.duration = max(0.5, min(3600, (Double(endMs) - Double(startMs)) / 1000))
         }
-        info.duration = max(Double(endMs - startMs) / 1000.0, 0.5)
-        if let last = info.times.last, last > info.duration { info.duration = last + 0.3 }
-
-        if index + 1 < lines.count {
-            info.next = lineText(lines[index + 1] as AnyObject)
-        }
+        if let last = info.times.last { info.duration = max(info.duration, last + 0.05) }
+        // 本次需求仅单行，避免给扩展发送未展示的下一行与整首歌词。
         return info
-    }
-
-    private static func lineText(_ line: AnyObject) -> String {
-        if let f = fnLineText, let s = f(line) { return s as String }
-        guard line is NSObject else { return "" }
-        let words = array(line, "words") ?? []
-        var out = ""
-        for w in words {
-            out += string(w, "text") ?? ""
-            if !(bool(w, "joined") ?? false) { out += " " }
-        }
-        return out.trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - 下发（单 Task 串行，最新覆盖）
@@ -348,70 +424,113 @@ public final class SGLLiveIsland: NSObject {
             fontStep: Defaults.fontStep,
             windowChars: Defaults.windowChars,
             useArtworkColor: Defaults.useArtworkColor,
+            islandHidden: Defaults.islandHidden,
             refreshTime: Defaults.refreshTime,
             smoothScroll: Defaults.smoothScroll,
-            accent: accentHex()
+            accent: accentHex(trackID: cachedTrack)
         )
         let stale: Date? = info.paused && Defaults.autoHideSeconds > 0
             ? Date().addingTimeInterval(TimeInterval(Defaults.autoHideSeconds))
             : nil
 
+        // ActivityKit 的状态预算有限；不把任意长歌词交给系统编码。
+        guard let data = try? JSONEncoder().encode(state), data.count <= 3584 else {
+            lastFailedKey = lastSentKey
+            retryAfter = Date().addingTimeInterval(30)
+            lastSentKey = nil
+            return
+        }
         pendingState = state
         pendingStale = stale
+        pendingKey = lastSentKey
+        pendingGeneration = generation
+        drain()
+    }
+
+    private static var endRequested = false
+
+    private static func drain() {
         guard !sending else { return }
         sending = true
         Task { @MainActor in
-            while let s = pendingState {
-                let st = pendingStale
+            defer { sending = false }
+            while endRequested || pendingState != nil {
+                if endRequested {
+                    endRequested = false
+                    let old = activity
+                    activity = nil
+                    if let old { await old.end(nil, dismissalPolicy: .immediate) }
+                    continue
+                }
+                guard let state = pendingState else { continue }
+                let stale = pendingStale
+                let key = pendingKey
+                let epoch = pendingGeneration
                 pendingState = nil
                 pendingStale = nil
-                await send(s, stale: st)
+                pendingKey = nil
+                guard epoch == generation, Defaults.isOn else { continue }
+                await send(state, stale: stale, key: key, epoch: epoch)
             }
-            sending = false
         }
     }
 
     @MainActor
-    private static func send(_ state: SGLyricsAttributes.ContentState, stale: Date?) async {
+    private static func send(_ state: SGLyricsAttributes.ContentState,
+                             stale: Date?, key: String?, epoch: Int) async {
         let content = ActivityContent(state: state, staleDate: stale)
-        if let a = activity ?? Activity<SGLyricsAttributes>.activities.first {
-            activity = a
+        if let a = activity, a.activityState == .active || a.activityState == .stale {
             await a.update(content)
             return
         }
-        if let showing = bridgeIsShowing, showing() { return }
-
+        // 这里不假定后台音频资格允许 request，授权/前后台失败走退避。
+        guard ActivityAuthorizationInfo().areActivitiesEnabled,
+              UIApplication.shared.applicationState == .active,
+              !(bridgeIsShowing?() ?? false) else {
+            lastFailedKey = key
+            retryAfter = Date().addingTimeInterval(10)
+            if lastSentKey == key { lastSentKey = nil }
+            return
+        }
         do {
-            activity = try await Activity.request(
+            let newActivity = try Activity.request(
                 attributes: SGLyricsAttributes(), content: content, pushType: nil)
-            log.info("activity started")
+            guard epoch == generation, Defaults.isOn else {
+                await newActivity.end(nil, dismissalPolicy: .immediate)
+                return
+            }
+            activity = newActivity
+            lastFailedKey = nil
+            retryAfter = .distantPast
         } catch {
+            lastFailedKey = key
+            retryAfter = Date().addingTimeInterval(10)
+            if lastSentKey == key { lastSentKey = nil }
             log.error("request failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private static func dropActivity() {
-        Task { @MainActor in
-            guard let a = activity ?? Activity<SGLyricsAttributes>.activities.first else { return }
-            await a.end(nil, dismissalPolicy: .immediate)
-            activity = nil
-        }
+        generation &+= 1
+        pendingState = nil
+        pendingStale = nil
+        pendingKey = nil
+        lastSentKey = nil
+        lastFailedKey = nil
+        retryAfter = .distantPast
+        endRequested = true
+        drain()
     }
 
     // MARK: - 主题色
 
-    private static func accentHex() -> String {
+    private static func accentHex(trackID: String?) -> String {
         guard Defaults.useArtworkColor else { return SGLyricsAttributes.ContentState.defaultAccent }
-        guard let f = fnAccent, let color = f() as? UIColor else {
-            return SGLyricsAttributes.ContentState.defaultAccent
+        // 只认与当前曲目匹配的封面；未就绪/不匹配时用默认色，绝不拿上一首冒充。
+        if let track = trackID, !track.isEmpty,
+           let hex = SGLArtworkHex(track), hex.count == 6 {
+            return hex
         }
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        guard color.getRed(&r, green: &g, blue: &b, alpha: &a) else {
-            return SGLyricsAttributes.ContentState.defaultAccent
-        }
-        func clamp(_ v: CGFloat) -> UInt32 {
-            UInt32(max(0, min(255, (v * 255).rounded())))
-        }
-        return String(format: "%02X%02X%02X", clamp(r), clamp(g), clamp(b))
+        return SGLyricsAttributes.ContentState.defaultAccent
     }
 }

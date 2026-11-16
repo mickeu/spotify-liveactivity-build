@@ -15,20 +15,25 @@ mkdir -p "$OUT/SGLiveIslandWidget.appex" "$OUT/.obj"
 echo "==> SDK: $SDK"
 
 echo "==> 1/3 ObjC 构造器"
-"$CLANG" -c "$ROOT/Source/Bootstrap.m" -o "$OUT/.obj/Bootstrap.o" \
-  -target arm64-apple-ios16.2 -isysroot "$SDK" -fobjc-arc -O2 -Wall
+for f in Bootstrap Settings Artwork; do
+  "$CLANG" -c "$ROOT/Source/$f.m" -o "$OUT/.obj/$f.o" \
+    -target arm64-apple-ios16.2 -isysroot "$SDK" -fobjc-arc -O2 -Wall -I "$ROOT/Source"
+done
 
 echo "==> 2/3 SGLiveIsland.dylib"
 "$SWIFTC" -O -wmo -emit-library \
   -target arm64-apple-ios16.2 -sdk "$SDK" \
   -module-name SGLiveIsland \
   -swift-version 5 \
+  -import-objc-header "$ROOT/Source/Bridge.h" \
   -framework Foundation -framework UIKit -framework ActivityKit \
+  -framework CoreGraphics -framework QuartzCore \
   -Xlinker -install_name -Xlinker @rpath/SGLiveIsland.dylib \
   -o "$OUT/SGLiveIsland.dylib" \
+  "$ROOT/Shared/LyricMotion.swift" \
   "$ROOT/Shared/SGLyricsAttributes.swift" \
   "$ROOT/Source/SGLLiveIsland.swift" \
-  "$OUT/.obj/Bootstrap.o"
+  "$OUT/.obj/Bootstrap.o" "$OUT/.obj/Settings.o" "$OUT/.obj/Artwork.o"
 
 echo "==> 3/3 SGLiveIslandWidget.appex"
 "$SWIFTC" -O -wmo -parse-as-library \
@@ -39,6 +44,7 @@ echo "==> 3/3 SGLiveIslandWidget.appex"
   -Xlinker -e -Xlinker _NSExtensionMain \
   -o "$OUT/SGLiveIslandWidget.appex/SGLiveIslandWidget" \
   "$ROOT/Shared/SGLyricsAttributes.swift" \
+  "$ROOT/Widget/ClockDriver.swift" \
   "$ROOT/Widget/SGLiveIslandWidget.swift"
 
 cp "$ROOT/Widget/Info.plist" "$OUT/SGLiveIslandWidget.appex/Info.plist"

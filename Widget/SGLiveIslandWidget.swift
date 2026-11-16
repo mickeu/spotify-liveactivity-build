@@ -1,11 +1,6 @@
-// SGLiveIslandWidget.swift — 灵动岛的「脸」
-//
-// 丝滑靠三件事：
-//   1. 位移由 extension 自己的 TimelineView 每 0.2 秒本地重算，不走跨进程更新；
-//   2. 位移 = 「已唱字数的小数位置」× 实测字宽，是亚像素连续移动，不是整字跳格；
-//   3. 字宽用 monospaced 字体实测一次并缓存（只有 4 个可能值），既准又不产生分配。
-//
-// 数据全部来自 ContentState：主 App 只在换行时推一次。
+// SGLiveIslandWidget.swift
+// 单行灵动歌词：ClockEffect 驱动连续运动，失败时静态降级。
+// 不使用 TimelineView 作为滚动主驱动；不显示逐字高亮、下一行或控制栏。
 
 import ActivityKit
 import Foundation
@@ -13,299 +8,175 @@ import SwiftUI
 import UIKit
 import WidgetKit
 
-// MARK: - 字宽（等宽字体，实测一次后常量级缓存）
-
-private enum Metrics {
-    // 不用可变缓存：widget 渲染随时可能重入，静态可变字典既不安全也没必要，
-    // 单次测宽只有微秒级开销。
-    static func font(_ size: CGFloat) -> UIFont {
-        UIFont.monospacedSystemFont(ofSize: size, weight: .semibold)
-    }
-
-    static func width(ascii: Bool, size: CGFloat) -> CGFloat {
-        let probe = ascii ? "a" : "中"
-        return (probe as NSString).size(withAttributes: [.font: font(size)]).width
-    }
-
-    static func width(_ c: Character, size: CGFloat) -> CGFloat {
-        width(ascii: c.isASCII, size: size)
-    }
-
-    /// 前 p 个字（p 可带小数）的累计宽度。
-    /// 等宽字体下只有「全角 / ASCII」两种宽度，所以每帧只测两次。
-    static func offset(_ chars: [Character], upTo p: Double, size: CGFloat) -> CGFloat {
-        guard !chars.isEmpty else { return 0 }
-        let whole = min(max(Int(p), 0), chars.count)
-        let cjk = width(ascii: false, size: size)
-        let ascii = width(ascii: true, size: size)
-        var w: CGFloat = 0
-        for i in 0..<whole { w += chars[i].isASCII ? ascii : cjk }
-        if whole < chars.count {
-            w += (chars[whole].isASCII ? ascii : cjk) * CGFloat(p - Double(whole))
+private enum LyricMetrics {
+    static func font(_ step: Int, compact: Bool) -> UIFont {
+        let size: CGFloat
+        switch step {
+        case 0: size = compact ? 11 : 20
+        case 2: size = compact ? 15 : 26
+        default: size = compact ? 13 : 23
         }
-        return w
+        return UIFont.monospacedSystemFont(ofSize: size, weight: .semibold)
+    }
+
+    static func swiftUIFont(_ step: Int, compact: Bool) -> Font {
+        let u = font(step, compact: compact)
+        return .system(size: u.pointSize, weight: .semibold, design: .monospaced)
+    }
+
+    static func width(_ text: String, font: UIFont) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        return (text as NSString).size(withAttributes: [.font: font]).width
     }
 }
 
-// MARK: - 进度
-
-private enum Scroll {
-    /// 已唱字数的小数位置：整数部分是唱完的字，小数部分是当前字唱到的比例。
-    static func position(_ s: SGLyricsAttributes.ContentState, at date: Date) -> Double {
-        let total = s.line.count
-        guard total > 0 else { return 0 }
-        let ref = s.paused ? (s.pausedAt ?? s.lineStart) : date
-        let elapsed = ref.timeIntervalSince(s.lineStart)
-        guard elapsed > 0 else { return 0 }
-
-        if !s.wordTimes.isEmpty {
-            var prev = 0.0
-            for (i, t) in s.wordTimes.enumerated() {
-                if t <= elapsed { prev = t; continue }
-                let span = max(t - prev, 0.001)
-                let frac = min(max((elapsed - prev) / span, 0), 1)
-                return min(Double(i) + frac, Double(total))
-            }
-            return Double(total)
-        }
-
-        guard s.lineDuration > 0 else { return 0 }
-        return min(max(elapsed / s.lineDuration, 0), 1) * Double(total)
-    }
+private func safe(_ value: Double, fallback: Double = 0) -> Double {
+    value.isFinite ? value : fallback
 }
 
-// MARK: - 样式
-
-private func fontSize(_ s: SGLyricsAttributes.ContentState, compact: Bool) -> CGFloat {
-    switch s.fontStep {
-    case 0: return compact ? 11 : 20
-    case 2: return compact ? 15 : 26
-    default: return compact ? 13 : 23
-    }
+private func safe(_ value: CGFloat, fallback: CGFloat = 0) -> CGFloat {
+    value.isFinite ? value : fallback
 }
 
-private func accentColor(_ s: SGLyricsAttributes.ContentState) -> Color {
-    Color(hex: s.accent)
+private func lyricColor(_ state: SGLyricsAttributes.ContentState) -> Color {
+    state.useArtworkColor ? Color(hex: state.accent) : .white
 }
 
-private func lyricColor(_ s: SGLyricsAttributes.ContentState) -> Color {
-    s.useArtworkColor ? Color(hex: s.accent) : .white
-}
-
-// MARK: - 入口
-
-@available(iOS 17.0, *)
+@available(iOS 16.1, *)
 @main
 struct SGLiveIslandBundle: WidgetBundle {
-    var body: some Widget {
-        SGLyricsLiveActivity()
-    }
+    var body: some Widget { SGLyricsLiveActivity() }
 }
 
-@available(iOS 17.0, *)
+@available(iOS 16.1, *)
 struct SGLyricsLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SGLyricsAttributes.self) { context in
-            LockScreenView(state: context.state)
+            ClockLyricLine(state: context.state, compact: false)
                 .activityBackgroundTint(.black.opacity(0.45))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
-                    ExpandedLyrics(state: context.state)
-                }
-                DynamicIslandExpandedRegion(.bottom) {
-                    ExpandedFooter(state: context.state)
+                    ClockLyricLine(state: context.state, compact: false)
                 }
             } compactLeading: {
-                CompactLyrics(state: context.state)
+                ClockLyricLine(state: context.state, compact: true)
             } compactTrailing: {
-                CompactTail(state: context.state)
+                EmptyView()
             } minimal: {
-                MinimalGlyph(state: context.state)
+                Image(systemName: context.state.paused ? "pause.fill" : "music.note")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(lyricColor(context.state))
             }
-            .keylineTint(accentColor(context.state))
+            .keylineTint(Color(hex: context.state.accent))
         }
     }
 }
 
-// MARK: - compact：单行滚动，不高亮
-
-@available(iOS 17.0, *)
-private struct CompactLyrics: View {
+@available(iOS 16.1, *)
+@MainActor
+private struct ClockLyricLine: View {
     let state: SGLyricsAttributes.ContentState
+    let compact: Bool
+    var minimal = false
+    private let period = 3600.0
 
     var body: some View {
-        let size = fontSize(state, compact: true)
-        let chars = Array(state.line)
-
-        TimelineView(.periodic(from: .now, by: max(state.refreshTime, 0.1))) { ctx in
-            let p = Scroll.position(state, at: ctx.date)
-            // 灵动歌词的 forceNoScroll：暂停、关掉平滑、或整行本来就塞得下时不滚
-            let scrollable = state.smoothScroll && !state.paused && chars.count > state.windowChars
-            let shift = scrollable ? Metrics.offset(chars, upTo: p, size: size) : 0
-
+        if !state.islandHidden {
             GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Text(displayText)
-                        .font(.system(size: size, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(lyricColor(state))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .offset(x: -shift)
+                let viewport = min(max(safe(geo.size.width), 1), requestedWidth)
+                let uiFont = LyricMetrics.font(state.fontStep, compact: compact)
+                // Untrusted content must not create unbounded text/layout storage.
+                let text = String(state.line.prefix(512)).replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\r", with: " ")
+                let width = safe(LyricMetrics.width(text, font: uiFont))
+                let radius = radiusFor(width: width, viewport: viewport)
+                let elapsed = frozenElapsed()
+                let phase = 2 * Double.pi * phaseSeconds() / period
+                    + Double.pi * safe(state.lineDuration) / period
+                let label = Text(text)
+                    .font(LyricMetrics.swiftUIFont(state.fontStep, compact: compact))
+                    .foregroundStyle(lyricColor(state))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: true)
+                // Small leading-aligned fallback, never a cropped giant circle.
+                let fallback = label.frame(width: viewport, height: uiFont.lineHeight, alignment: .leading)
+
+                Group {
+                    if radius > 0 && state.paused {
+                        // Stop the private driver entirely. Freeze the SAME arc
+                        // geometry at pausedAt; resume receives a rebased lineStart.
+                        if ClockDriver<Text, Text>.isAvailable {
+                            label
+                                .frame(width: 2 * radius, height: 2 * radius, alignment: .top)
+                                .rotationEffect(.radians(
+                                    Double.pi * state.lineDuration / period - 2 * Double.pi * elapsed / period
+                                ), anchor: .center)
+                                .offset(y: radius - uiFont.lineHeight * 0.5)
+                        } else {
+                            fallback
+                        }
+                    } else if radius > 0 {
+                        ClockDriver(
+                            moving: label
+                                .frame(width: 2 * radius, height: 2 * radius, alignment: .top)
+                                .rotationEffect(.radians(phase), anchor: .center),
+                            fallback: fallback,
+                            verticalReturn: radius - uiFont.lineHeight * 0.5
+                        )
+                    } else {
+                        fallback
+                    }
                 }
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
+                .frame(width: viewport, height: uiFont.lineHeight + 4, alignment: .center)
                 .clipped()
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0),
-                            .init(color: .black, location: 0.06),
-                            .init(color: .black, location: 0.84),
-                            .init(color: .clear, location: 1)
-                        ],
-                        startPoint: .leading, endPoint: .trailing
-                    )
-                )
             }
-            .frame(width: compactWidth(state), height: size + 6)
+            .frame(width: compact ? requestedWidth : nil, height: lineHeight)
+            .frame(maxWidth: compact ? nil : requestedWidth)
+            .clipped()
         }
     }
 
-    private var displayText: String {
-        if !state.line.isEmpty { return state.line }
-        return state.paused ? "已暂停" : "♪"
+    private var requestedWidth: CGFloat {
+        if minimal { return 26 }
+        if compact { return state.windowChars >= 10 ? 74 : 58 }
+        return state.windowChars >= 10 ? 300 : 240
     }
 
-    /// 系统给 compact 区的宽度是固定的（约 60pt），这里只用设置项在
-    /// 「标准」和「最长」之间做两档，避免把布局撑出界。
-    private func compactWidth(_ s: SGLyricsAttributes.ContentState) -> CGFloat {
-        s.windowChars >= 10 ? 74 : 58
-    }
-}
-
-// MARK: - compact 右侧
-
-@available(iOS 17.0, *)
-private struct CompactTail: View {
-    let state: SGLyricsAttributes.ContentState
-
-    var body: some View {
-        Image(systemName: state.paused ? "pause.fill" : "waveform")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(lyricColor(state).opacity(0.9))
-            .frame(width: 16)
-    }
-}
-
-// MARK: - minimal
-
-@available(iOS 17.0, *)
-private struct MinimalGlyph: View {
-    let state: SGLyricsAttributes.ContentState
-
-    var body: some View {
-        Image(systemName: state.paused ? "pause.fill" : "music.note")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(lyricColor(state))
-    }
-}
-
-// MARK: - expanded：整行 + 逐字高亮
-
-@available(iOS 17.0, *)
-private struct ExpandedLyrics: View {
-    let state: SGLyricsAttributes.ContentState
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: max(state.refreshTime, 0.1))) { ctx in
-            Text(highlighted(state.sungCount(at: ctx.date)))
-                .font(.system(size: fontSize(state, compact: false),
-                              weight: .semibold, design: .rounded))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: .infinity)
-        }
+    private var lineHeight: CGFloat {
+        LyricMetrics.font(state.fontStep, compact: compact).lineHeight + 4
     }
 
-    private func highlighted(_ sung: Int) -> AttributedString {
-        split(lyricColor(state))
+    private func radiusFor(width: CGFloat, viewport: CGFloat) -> CGFloat {
+        guard state.smoothScroll, width > viewport,
+              state.lineDuration.isFinite, (0.25...120).contains(state.lineDuration),
+              state.lineStart.timeIntervalSince1970.isFinite,
+              !state.paused || (state.pausedAt?.timeIntervalSince1970.isFinite == true)
+        else { return 0 }
+        let raw = (width + 20 - viewport) * CGFloat(period / (2 * Double.pi * state.lineDuration))
+        // Reject, NEVER clamp: clamping R would silently change the singing speed.
+        // No drawingGroup/blur/shadow/mask or bitmap of this circle is requested.
+        // A frame is layout, not an allocation guarantee; device memory profiling
+        // is still mandatory. Oversized radius means static text, honestly.
+        guard raw.isFinite, raw >= 1, raw <= 4096 else { return 0 }
+        let now = Date().timeIntervalSince(state.lineStart)
+        guard now.isFinite, state.paused || (now >= 0 && now <= state.lineDuration) else { return 0 }
+        return raw
+    }
+
+    private func frozenElapsed() -> Double {
+        guard state.paused, let at = state.pausedAt else { return 0 }
+        let elapsed = safe(at.timeIntervalSince(state.lineStart))
+        return min(max(elapsed, 0), max(safe(state.lineDuration), 0))
+    }
+
+    private func phaseSeconds() -> Double {
+        let t = safe(state.lineStart.timeIntervalSince1970)
+        let m = t.truncatingRemainder(dividingBy: period)
+        return m < 0 ? m + period : m
     }
 }
-
-// MARK: - expanded 底部：下一行
-
-@available(iOS 17.0, *)
-private struct ExpandedFooter: View {
-    let state: SGLyricsAttributes.ContentState
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(state.nextLine.isEmpty ? " " : state.nextLine)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if state.paused {
-                Image(systemName: "pause.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-}
-
-// MARK: - 锁屏
-
-@available(iOS 17.0, *)
-private struct LockScreenView: View {
-    let state: SGLyricsAttributes.ContentState
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: max(state.refreshTime, 0.1))) { ctx in
-            VStack(alignment: .leading, spacing: 6) {
-                Text(highlighted(state.sungCount(at: ctx.date)))
-                    .font(.system(size: 21, weight: .semibold, design: .rounded))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.7)
-
-                if !state.nextLine.isEmpty {
-                    Text(state.nextLine)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-        }
-    }
-
-    private func highlighted(_ sung: Int) -> AttributedString {
-        split(lyricColor(state))
-    }
-}
-
-// MARK: - 分段着色
-
-/// 把一行按「已唱 / 未唱」拼成两段 AttributedString。
-/// 不用 index(offsetBy:) 做索引运算，整段替换零越界风险。
-@available(iOS 17.0, *)
-private func split(_ state: SGLyricsAttributes.ContentState, _ sung: Int, _ sungColor: Color) -> AttributedString {
-    let text = state.line.isEmpty ? "♪" : state.line
-    let cut = min(max(sung, 0), text.count)
-    var head = AttributedString(String(text.prefix(cut)))
-    head.foregroundColor = sungColor
-    var tail = AttributedString(String(text.dropFirst(cut)))
-    tail.foregroundColor = Color.white.opacity(0.42)
-    return head + tail
-}
-
-// MARK: - 颜色
 
 extension Color {
     init(hex: String) {
@@ -315,10 +186,8 @@ extension Color {
             self.init(red: 0.12, green: 0.84, blue: 0.38)
             return
         }
-        self.init(
-            red: Double((value >> 16) & 0xFF) / 255,
-            green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255
-        )
+        self.init(red: Double((value >> 16) & 0xFF) / 255,
+                  green: Double((value >> 8) & 0xFF) / 255,
+                  blue: Double(value & 0xFF) / 255)
     }
 }

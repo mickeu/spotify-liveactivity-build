@@ -331,7 +331,7 @@ public final class SGLLiveIsland: NSObject {
             // 插件只在有页面请求过歌词时才有行；后台/没人打开歌词页就一直是 nil。
             if lyricsRequests < 3, let ask = fnRequestLyrics {
                 lyricsRequests += 1
-                ask(track)
+                ask(track as NSString)
                 diag("request lyrics #\(lyricsRequests) for \(track)")
             }
             if let raw = fnLines?(track as NSString), raw.count <= 4096 {

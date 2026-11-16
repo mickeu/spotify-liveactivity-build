@@ -182,7 +182,13 @@ public final class SGLLiveIsland: NSObject {
     @objc public static func start() {
         guard !started else { return }
         started = true
-        diag("dylib start, iOS \(UIDevice.current.systemVersion)")
+        let plugIns = Bundle.main.builtInPlugInsPath.flatMap {
+            try? FileManager.default.contentsOfDirectory(atPath: $0)
+        } ?? []
+        let auth = ActivityAuthorizationInfo()
+        diag("start iOS \(UIDevice.current.systemVersion) enabled=\(auth.areActivitiesEnabled) "
+             + "appex=\(plugIns.filter { $0.hasSuffix(".appex") }.joined(separator: ",")) "
+             + "ours=\(Activity<SGLyricsAttributes>.activities.count)")
         settingsFingerprint = settingsKey()
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main

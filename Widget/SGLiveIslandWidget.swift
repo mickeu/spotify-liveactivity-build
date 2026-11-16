@@ -157,8 +157,8 @@ private struct IslandLine: View {
         .clipped()
     }
 
-    private func staticLine(_ label: Text, _ lineHeight: CGFloat) -> some View {
-        label.frame(width: viewport, height: lineHeight, alignment: .leading)
+    private func staticLine<V: View>(_ content: V, _ lineHeight: CGFloat) -> some View {
+        content.frame(width: viewport, height: lineHeight, alignment: .leading)
     }
 
     /// t₀ 在周期内的相位（0…1）

@@ -244,6 +244,7 @@ public final class SGLLiveIsland: NSObject {
     private static var samplePaused = true
     private static var suppressedTrack: String?
     private static var lyricsRequests = 0
+    private static var debugTag = ""
     private static var diagTrack: String?
     private static var diagLineIndex = -1
 
@@ -338,13 +339,39 @@ public final class SGLLiveIsland: NSObject {
                 cachedLines = raw as? [AnyObject] ?? []
             }
         }
-        guard !cachedLines.isEmpty else { return }
+        guard !cachedLines.isEmpty else {
+            // 还没拿到歌词：把状态画到岛上，便于在不连设备的情况下定位。
+            let tag = "L0 r\(lyricsRequests) p\(paused ? 1 : 0)"
+            if debugTag != tag {
+                debugTag = tag
+                var info = LineInfo()
+                info.text = ""
+                info.times = []
+                info.duration = 4
+                info.lineStart = now
+                info.paused = paused
+                info.debug = tag
+                deliver(info)
+            }
+            return
+        }
         let idx = fnLead?(cachedLines as NSArray, pos) ?? -1
         guard idx >= 0, idx < cachedLines.count else {
             if cachedInfo != nil {
                 cachedInfo = nil
                 cachedLineIndex = -1
-                dropActivity()
+                let tag = "L\(cachedLines.count) i-1"
+                if debugTag != tag {
+                    debugTag = tag
+                    var info = LineInfo()
+                    info.text = ""
+                    info.times = []
+                    info.duration = 4
+                    info.lineStart = now
+                    info.paused = paused
+                    info.debug = tag
+                    deliver(info)
+                }
             }
             return
         }
@@ -360,7 +387,7 @@ public final class SGLLiveIsland: NSObject {
         let key = "\(track)#\(idx)#\(paused)"
         if key == lastFailedKey && now < retryAfter { return }
         guard key != lastSentKey || transition || seeked else { return }
-        guard var info = cachedInfo, !info.text.isEmpty else { return }
+        guard var info = cachedInfo, !info.text.isEmpty || !info.debug.isEmpty else { return }
         // 每次暂停、恢复、seek 都按播放器位置重新锚定，避免累计暂停时间。
         let startMs = int(cachedLines[idx], "start") ?? pos
         let elapsed = max((Double(pos) - Double(startMs)) / 1000, 0)
@@ -412,6 +439,7 @@ public final class SGLLiveIsland: NSObject {
         var duration: Double = 0
         var lineStart = Date()
         var paused = false
+        var debug = ""
     }
 
     private static func parse(line: AnyObject, lines: [AnyObject], index: Int, posMs: Int) -> LineInfo {
@@ -453,6 +481,10 @@ public final class SGLLiveIsland: NSObject {
         } else {
             info.duration = max(0.5, min(3600, (Double(endMs) - Double(startMs)) / 1000))
         }
+        if info.text.isEmpty, let f = fnLineText, let line = f(nso) {
+            info.text = (line as String).trimmingCharacters(in: .whitespacesAndNewlines)
+            info.times = []
+        }
         if let last = info.times.last { info.duration = max(info.duration, last + 0.05) }
         // 本次需求仅单行，避免给扩展发送未展示的下一行与整首歌词。
         return info
@@ -465,7 +497,9 @@ public final class SGLLiveIsland: NSObject {
             line: info.text,
             nextLine: info.next,
             title: "",
-            artist: "",
+            artist: info.text.isEmpty
+                ? (info.debug.isEmpty ? "L\(cachedLines.count)" : info.debug)
+                : "",
             paused: info.paused,
             lineStart: info.lineStart,
             wordTimes: info.times,

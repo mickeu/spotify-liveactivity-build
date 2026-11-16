@@ -88,7 +88,10 @@ private struct ClockLyricLine: View {
                 let viewport = min(max(safe(geo.size.width), 1), requestedWidth)
                 let uiFont = LyricMetrics.font(state.fontStep, compact: compact)
                 // Untrusted content must not create unbounded text/layout storage.
-                let text = String(state.line.prefix(512)).replacingOccurrences(of: "\n", with: " ")
+                let debug = state.line.isEmpty ? state.artist : ""
+                let text = state.line.isEmpty
+                    ? (debug.isEmpty ? "♪" : debug)
+                    : String(state.line.prefix(512)).replacingOccurrences(of: "\n", with: " ")
                     .replacingOccurrences(of: "\r", with: " ")
                 let width = safe(LyricMetrics.width(text, font: uiFont))
                 let radius = radiusFor(width: width, viewport: viewport)

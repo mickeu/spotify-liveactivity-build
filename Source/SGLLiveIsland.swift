@@ -99,6 +99,12 @@ public final class SGLLiveIsland: NSObject {
     private static var sendRetryAfter = Date.distantPast
     private static var pausedDiagLogged = false
     private static var loggedUpdate = false
+    private static var trace = 0
+    private static func traceLog(_ text: String) {
+        guard trace < 14 else { return }
+        trace += 1
+        diag("T\(trace) \(text)")
+    }
     private static var loggedRequestBlock = false
     private static var lastLinesAttempt = Date.distantPast
     private static var noLyricsTrack: String?
@@ -560,6 +566,8 @@ public final class SGLLiveIsland: NSObject {
             : nil
 
         // ActivityKit 的状态预算有限；不把任意长歌词交给系统编码。
+        let encoded = (try? JSONEncoder().encode(state))?.count ?? -1
+        traceLog("deliver bytes=\(encoded) len=\(state.line.count)")
         guard let data = try? JSONEncoder().encode(state), data.count <= 3584 else {
             lastFailedKey = lastSentKey
             retryAfter = Date().addingTimeInterval(30)
@@ -576,7 +584,7 @@ public final class SGLLiveIsland: NSObject {
     private static var endRequested = false
 
     private static func drain() {
-        guard !sending else { return }
+        if sending { traceLog("drain busy"); return }
         sending = true
         Task { @MainActor in
             defer { sending = false }
@@ -595,7 +603,10 @@ public final class SGLLiveIsland: NSObject {
                 pendingState = nil
                 pendingStale = nil
                 pendingKey = nil
-                guard epoch == generation, Defaults.isOn else { continue }
+                guard epoch == generation, Defaults.isOn else {
+                    traceLog("drop epoch=\(epoch)/\(generation) on=\(Defaults.isOn)")
+                    continue
+                }
                 await send(state, stale: stale, key: key, epoch: epoch)
             }
         }
@@ -604,6 +615,7 @@ public final class SGLLiveIsland: NSObject {
     @MainActor
     private static func send(_ state: SGLyricsAttributes.ContentState,
                              stale: Date?, key: String?, epoch: Int) async {
+        traceLog("send act=\(activity == nil ? "nil" : "some") fg=\(UIApplication.shared.applicationState == .active)")
         let content = ActivityContent(state: state, staleDate: stale)
         if let a = activity, a.activityState == .active || a.activityState == .stale {
             await a.update(content)

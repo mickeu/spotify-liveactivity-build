@@ -62,7 +62,7 @@ public final class SGLLiveIsland: NSObject {
         fnAccent = symbol("SGAccentColor", ColorFn.self)
         resolveBridge()
         linked = true
-        log.info("linked")
+        diag("plugin symbols linked")
         return true
     }
 
@@ -157,9 +157,29 @@ public final class SGLLiveIsland: NSObject {
         "\(Defaults.isOn)|\(Defaults.autoHideSeconds)|\(Defaults.hideOnPause)|\(Defaults.useArtworkColor)|\(Defaults.fontStep)|\(Defaults.smoothScroll)|\(Defaults.windowChars)|\(Defaults.tickInterval)|\(Defaults.islandHidden)"
     }
 
+    /// 诊断日志：写在沙盒 Documents，可用沙盒穿透读回。
+    /// 只在启动/关键状态变化时写，不随 tick 刷。
+    static func diag(_ line: String) {
+        let path = NSHomeDirectory() + "/Documents/sgl.log"
+        let text = "\(Date()) \(line)\n"
+        guard let data = text.data(using: .utf8) else { return }
+        let fm = FileManager.default
+        if let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int, size > 64 * 1024 {
+            try? fm.removeItem(atPath: path)
+        }
+        if let h = FileHandle(forWritingAtPath: path) {
+            defer { try? h.close() }
+            try? h.seekToEnd()
+            try? h.write(contentsOf: data)
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
     @objc public static func start() {
         guard !started else { return }
         started = true
+        diag("dylib start, iOS \(UIDevice.current.systemVersion)")
         settingsFingerprint = settingsKey()
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
@@ -222,7 +242,14 @@ public final class SGLLiveIsland: NSObject {
     private static var suppressedTrack: String?
 
     private static func tick() {
-        guard Defaults.isOn, link() else { return }
+        guard Defaults.isOn else { return }
+        guard link() else {
+            if retryAfter < Date() {
+                retryAfter = Date().addingTimeInterval(5)
+                diag("plugin symbols not available yet")
+            }
+            return
+        }
         let now = Date()
         let uptime = ProcessInfo.processInfo.systemUptime
         guard let track = trackID(), !track.isEmpty,

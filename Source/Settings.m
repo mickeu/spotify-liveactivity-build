@@ -30,6 +30,41 @@ static SGSwitchRowIMP sSwitchRow;
 static SGChoiceRowIMP sChoiceRow;
 static BOOL sInstalled;
 
+static BOOL HasLockScreenLyricsRow(NSArray *sections);
+
+static void SGLLog(NSString *line) {
+    static NSString *path;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/sgl.log"];
+    });
+    NSString *entry = [NSString stringWithFormat:@"%@ %@\n",
+                       [NSDate date].description, line];
+    NSData *data = [entry dataUsingEncoding:NSUTF8StringEncoding];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:path]) {
+        [data writeToFile:path atomically:YES];
+        return;
+    }
+    NSDictionary *attrs = [fm attributesOfItemAtPath:path error:NULL];
+    if (attrs.fileSize > 64 * 1024) [fm removeItemAtPath:path error:NULL];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) return;
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:data];
+    } @catch (__unused NSException *e) {}
+    [handle closeFile];
+}
+
+// 页面标题在中文环境下会被本地化成「歌词」，所以只认 key，
+// 标题只作为 sections 为空时的备用信号。
+static BOOL LooksLikeLyricsPage(NSString *title, NSArray *sections) {
+    if (HasLockScreenLyricsRow(sections)) return YES;
+    if (title.length == 0) return NO;
+    return [title isEqualToString:@"Lyrics"] || [title isEqualToString:@"歌词"];
+}
+
 static BOOL HasLockScreenLyricsRow(NSArray *sections) {
     for (id section in sections) {
         NSArray *rows = ((id (*)(id, SEL))objc_msgSend)(section, @selector(rows));
@@ -72,8 +107,10 @@ static id SettingsPage(void) {
 
 static id LyricsPageInit(id self, SEL _cmd, NSString *title, NSString *intro, NSArray *sections, NSString *footer) {
     // Key is the durable identity; title rejects unrelated SGModPage instances containing a copied row.
-    if (![title isEqualToString:kLyricsTitle] || !HasLockScreenLyricsRow(sections))
+    if (!LooksLikeLyricsPage(title, sections))
         return sOriginalInit(self, _cmd, title, intro, sections, footer);
+    SGLLog([NSString stringWithFormat:@"attach to page '%@' (%lu sections)",
+            title, (unsigned long)sections.count]);
     NSMutableArray *extended = [sections mutableCopy];
     id entry = sPageRow(@"Live Island lyrics", ^UIViewController *{ return SettingsPage(); });
     [extended addObject:sSection(nil, @[entry])];
@@ -84,7 +121,7 @@ void SGLInstallSettings(void) {
     void (^install)(void) = ^{
         if (sInstalled) return;
         Class pageClass = NSClassFromString(@"SGModPage");
-        if (!pageClass) return; // Spotify/the original tweak has not loaded: a later call retries.
+        if (!pageClass) { SGLLog(@"SGModPage not found yet"); return; }
         Method method = class_getInstanceMethod(pageClass, @selector(initWithTitle:intro:sections:footer:));
         if (!method) return;
         void *pageRow = dlsym(RTLD_DEFAULT, "SGPageRow");
@@ -106,6 +143,7 @@ void SGLInstallSettings(void) {
         }
         method_setImplementation(method, (IMP)LyricsPageInit);
         sInstalled = YES;
+        SGLLog(@"hook installed on SGModPage");
     };
     if (NSThread.isMainThread) install();
     else dispatch_async(dispatch_get_main_queue(), install);

@@ -99,6 +99,7 @@ public final class SGLLiveIsland: NSObject {
     private static var sendRetryAfter = Date.distantPast
     private static var pausedDiagLogged = false
     private static var loggedUpdate = false
+    private static var testTick = 0
     private static var trace = 0
     private static func traceLog(_ text: String) {
         guard trace < 14 else { return }
@@ -149,6 +150,7 @@ public final class SGLLiveIsland: NSObject {
         static var islandHidden: Bool { UserDefaults.standard.object(forKey: hidden) as? Bool ?? false }
         /// 设置项「宽度」：0 标准 / 1 最长
         static var wideIsland: Bool { (UserDefaults.standard.object(forKey: width) as? Int ?? 0) == 1 }
+        static var selfTestOnly: Bool { false }
         static var showTranslation: Bool {
             UserDefaults.standard.object(forKey: showTranslationKey) as? Bool ?? true
         }
@@ -280,6 +282,7 @@ public final class SGLLiveIsland: NSObject {
 
     private static func tick() {
         guard Defaults.isOn else { return }
+        if Defaults.selfTestOnly { return }
         guard link() else {
             if retryAfter < Date() {
                 retryAfter = Date().addingTimeInterval(5)
@@ -543,7 +546,7 @@ public final class SGLLiveIsland: NSObject {
     // MARK: - 下发（单 Task 串行，最新覆盖）
 
     private static func deliver(_ info: LineInfo) {
-        let state = SGLyricsAttributes.ContentState(
+        deliverState(SGLyricsAttributes.ContentState(
             line: info.text,
             prevLine: info.prev,
             nextLine: info.next,
@@ -560,20 +563,20 @@ public final class SGLLiveIsland: NSObject {
             smoothScroll: Defaults.smoothScroll,
             showTranslation: Defaults.showTranslation,
             accent: accentHex(trackID: cachedTrack)
-        )
-        let stale: Date? = info.paused && Defaults.autoHideSeconds > 0
+        ), stale: info.paused && Defaults.autoHideSeconds > 0
             ? Date().addingTimeInterval(TimeInterval(Defaults.autoHideSeconds))
-            : nil
+            : nil)
+    }
 
+    private static func deliverState(_ state: SGLyricsAttributes.ContentState, stale: Date?) {
         // ActivityKit 的状态预算有限；不把任意长歌词交给系统编码。
-        let encoded = (try? JSONEncoder().encode(state))?.count ?? -1
-        traceLog("deliver bytes=\(encoded) len=\(state.line.count)")
         guard let data = try? JSONEncoder().encode(state), data.count <= 3584 else {
             lastFailedKey = lastSentKey
             retryAfter = Date().addingTimeInterval(30)
             lastSentKey = nil
             return
         }
+        _ = data
         pendingState = state
         pendingStale = stale
         pendingKey = lastSentKey
@@ -582,6 +585,21 @@ public final class SGLLiveIsland: NSObject {
     }
 
     private static var endRequested = false
+
+    /// 最小验证：不依赖歌词与插件，直接请求一张写死文字的活动。
+    private static func selfTest() {
+        guard Defaults.isOn else { return }
+        testTick += 1
+        let text = "自检 TEST #\(testTick)"
+        let state = SGLyricsAttributes.ContentState(
+            line: text, prevLine: "", nextLine: "", translation: "", nextTranslation: "",
+            paused: false, lineStart: Date(), lineDuration: 20, pausedAt: nil,
+            fontStep: Defaults.fontStep, useArtworkColor: false, islandHidden: false,
+            wideIsland: Defaults.wideIsland, smoothScroll: false, showTranslation: false,
+            accent: SGLyricsAttributes.ContentState.defaultAccent)
+        deliverState(state, stale: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { selfTest() }
+    }
 
     private static func drain() {
         if sending { traceLog("drain busy"); return }

@@ -18,10 +18,12 @@ struct SGLyricsAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         /// 当前行纯文本（已按字的真实间隔展开，空格也算一个位置）。
         var line: String
-        /// 下一行，expanded / 锁屏用；没有就空串。
+        /// 上一行 / 下一行（锁屏与展开态的上下文，灵动歌词同款布局）。
+        var prevLine: String
         var nextLine: String
-        /// 当前行的译文（灵动歌词同款布局用）；没有就空串。
+        /// 当前行的译文；下一行的译文。
         var translation: String
+        var nextTranslation: String
         var title: String
         var artist: String
         var paused: Bool

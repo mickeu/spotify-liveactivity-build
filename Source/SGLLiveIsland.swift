@@ -457,6 +457,7 @@ public final class SGLLiveIsland: NSObject {
 
     private struct LineInfo {
         var text = ""
+        var prev = ""
         var next = ""
         var times: [Double] = []
         var duration: Double = 0
@@ -464,6 +465,7 @@ public final class SGLLiveIsland: NSObject {
         var paused = false
         var debug = ""
         var translation = ""
+        var nextTranslation = ""
     }
 
     private static func parse(line: AnyObject, lines: [AnyObject], index: Int, posMs: Int) -> LineInfo {
@@ -505,10 +507,16 @@ public final class SGLLiveIsland: NSObject {
         } else {
             info.duration = max(0.5, min(3600, (Double(endMs) - Double(startMs)) / 1000))
         }
+        if index > 0 {
+            info.prev = lineText(lines[index - 1])
+        }
         if index + 1 < lines.count {
             info.next = lineText(lines[index + 1])
         }
         info.translation = string(nso, "translation") ?? ""
+        if index + 1 < lines.count {
+            info.nextTranslation = string(lines[index + 1], "translation") ?? ""
+        }
         if info.text.isEmpty, let f = fnLineText, let line = f(nso) {
             info.text = (line as String).trimmingCharacters(in: .whitespacesAndNewlines)
             info.times = []
@@ -523,8 +531,10 @@ public final class SGLLiveIsland: NSObject {
     private static func deliver(_ info: LineInfo) {
         let state = SGLyricsAttributes.ContentState(
             line: info.text,
+            prevLine: info.prev,
             nextLine: info.next,
             translation: info.translation,
+            nextTranslation: info.nextTranslation,
             title: "",
             artist: info.text.isEmpty
                 ? (info.debug.isEmpty ? "L\(cachedLines.count)" : info.debug)

@@ -1,6 +1,8 @@
 // SGLiveIslandWidget.swift
-// 参照灵动歌词的实际显示：灵动岛单行裁切滚动；锁屏与展开态「下一行 + 当前行 + 译文」。
-// 滚动由系统时钟效果驱动（ClockDriver），失败时静态一行，不做假动画。
+// 对齐灵动歌词的显示逻辑：
+//   · 灵动岛：单行，两侧渐隐，超出宽度按歌词时长匀速左移（系统时钟效果驱动）
+//   · 锁屏 / 展开：上一行 + 当前行 + 译文 + 下一行 + 下一行译文
+// 桥接失败一律退回静态单行，不做假动画。
 
 import ActivityKit
 import Foundation
@@ -8,31 +10,53 @@ import SwiftUI
 import UIKit
 import WidgetKit
 
-private enum LyricMetrics {
-    static func fontSize(_ step: Int, big: Bool) -> CGFloat {
+private enum Metrics {
+    /// 灵动岛单行字号（小 / 标准 / 大）
+    static func islandSize(_ step: Int) -> CGFloat {
         switch step {
-        case 0: return big ? 21 : 15
-        case 2: return big ? 28 : 19
-        default: return big ? 24 : 16
+        case 0: return 12
+        case 2: return 15
+        default: return 13
         }
     }
 
-    static func uiFont(_ step: Int, big: Bool) -> UIFont {
-        UIFont.systemFont(ofSize: fontSize(step, big: big), weight: .semibold)
+    /// 锁屏与展开态的字号层级
+    static func bodySize(_ step: Int, big: Bool) -> CGFloat {
+        let base: CGFloat
+        switch step {
+        case 0: base = 17
+        case 2: base = 21
+        default: base = 19
+        }
+        return big ? base + 1 : base
     }
 
-    static func font(_ step: Int, big: Bool) -> Font {
-        .system(size: fontSize(step, big: big), weight: .semibold)
-    }
-
-    static func width(_ text: String, step: Int, big: Bool) -> CGFloat {
+    static func width(_ text: String, size: CGFloat) -> CGFloat {
         guard !text.isEmpty else { return 0 }
-        return (text as NSString).size(withAttributes: [.font: uiFont(step, big: big)]).width
+        return (text as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: size, weight: .semibold)]).width
     }
 }
 
 private func lyricColor(_ s: SGLyricsAttributes.ContentState) -> Color {
     s.useArtworkColor ? Color(hex: s.accent) : .white
+}
+
+/// 两侧渐隐，灵动歌词的 leftFade / rightFade
+private struct EdgeFade: ViewModifier {
+    var width: CGFloat = 10
+    func body(content: Content) -> some View {
+        content.mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: width / 62.0),
+                    .init(color: .black, location: 1 - width / 62.0),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .leading, endPoint: .trailing
+            )
+        )
+    }
 }
 
 @available(iOS 16.1, *)
@@ -46,13 +70,13 @@ struct SGLyricsLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SGLyricsAttributes.self) { context in
             LockScreenLyrics(state: context.state)
-                .activityBackgroundTint(.black.opacity(0.55))
+                .activityBackgroundTint(.black.opacity(0.5))
                 .activitySystemActionForegroundColor(.white)
                 .widgetURL(URL(string: "spotify://"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
-                    ExpandedLyrics(state: context.state)
+                    LockScreenLyrics(state: context.state, expanded: true)
                 }
             } compactLeading: {
                 IslandLine(state: context.state)
@@ -69,22 +93,22 @@ struct SGLyricsLiveActivity: Widget {
     }
 }
 
-// MARK: - 灵动岛：单行，超宽时按节奏左移
+// MARK: - 灵动岛单行
 
 @available(iOS 16.1, *)
 private struct IslandLine: View {
     let state: SGLyricsAttributes.ContentState
     private let period = 3600.0
-    private let viewport: CGFloat = 62
+    private let viewport: CGFloat = 60
 
     var body: some View {
-        let step = state.fontStep
+        let size = Metrics.islandSize(state.fontStep)
+        let lineHeight = UIFont.systemFont(ofSize: size, weight: .semibold).lineHeight
         let text = visibleText
-        let lineHeight = LyricMetrics.uiFont(step, big: false).lineHeight
-        let width = LyricMetrics.width(text, step: step, big: false)
-        let radius = radiusFor(width: width)
+        let textWidth = Metrics.width(text, size: size)
+        let radius = radiusFor(width: textWidth)
         let label = Text(text)
-            .font(LyricMetrics.font(step, big: false))
+            .font(.system(size: size, weight: .semibold))
             .foregroundStyle(lyricColor(state))
             .lineLimit(1)
             .fixedSize()
@@ -95,18 +119,19 @@ private struct IslandLine: View {
                     moving: label
                         .frame(width: 2 * radius, height: 2 * radius, alignment: .top)
                         .rotationEffect(.radians(phase), anchor: .center),
-                    fallback: staticLine(label, lineHeight: lineHeight),
+                    fallback: fixed(label, lineHeight),
                     verticalReturn: radius - lineHeight * 0.5
                 )
             } else {
-                staticLine(label, lineHeight: lineHeight)
+                fixed(label, lineHeight)
             }
         }
         .frame(width: viewport, height: lineHeight, alignment: .leading)
+        .modifier(EdgeFade())
         .clipped()
     }
 
-    private func staticLine(_ label: Text, lineHeight: CGFloat) -> some View {
+    private func fixed(_ label: Text, _ lineHeight: CGFloat) -> some View {
         label.frame(width: viewport, height: lineHeight, alignment: .leading)
     }
 
@@ -125,79 +150,57 @@ private struct IslandLine: View {
 
     private func radiusFor(width: CGFloat) -> CGFloat {
         guard state.smoothScroll, state.lineDuration.isFinite,
-              (0.3...60).contains(state.lineDuration), width > viewport else { return 0 }
+              (0.3...60).contains(state.lineDuration), width > viewport + 20 else { return 0 }
         let distance = width + 20 - viewport
         let radius = distance * CGFloat(period / (2 * Double.pi * state.lineDuration))
-        // 半径过大退回静态一行；夹紧会改变语速，所以不夹。
         guard radius.isFinite, radius >= 1, radius <= 4096 else { return 0 }
         return radius
     }
 }
 
-// MARK: - 锁屏：下一行 + 当前行 + 译文（对齐灵动歌词）
+// MARK: - 锁屏 / 展开：上下文 + 译文
 
 @available(iOS 16.1, *)
 private struct LockScreenLyrics: View {
     let state: SGLyricsAttributes.ContentState
+    var expanded = false
 
     var body: some View {
-        VStack(spacing: 3) {
-            if !state.nextLine.isEmpty {
-                Text(state.nextLine)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.38))
+        let size = Metrics.bodySize(state.fontStep, big: expanded)
+        VStack(spacing: expanded ? 4 : 3) {
+            if !state.prevLine.isEmpty {
+                Text(state.prevLine)
+                    .font(.system(size: size - 4, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.3))
                     .lineLimit(1)
             }
             Text(mainLine)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(lyricColor(state))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
             if !state.translation.isEmpty {
                 Text(state.translation)
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: size - 3, weight: .medium))
                     .foregroundStyle(.white.opacity(0.75))
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-    }
-
-    private var mainLine: String {
-        if !state.line.isEmpty { return String(state.line.prefix(200)) }
-        return state.paused ? "已暂停" : "♪"
-    }
-}
-
-// MARK: - 展开态
-
-@available(iOS 16.1, *)
-private struct ExpandedLyrics: View {
-    let state: SGLyricsAttributes.ContentState
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Text(mainLine)
-                .font(.system(size: 25, weight: .semibold))
-                .foregroundStyle(lyricColor(state))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            if !state.translation.isEmpty {
-                Text(state.translation)
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
             }
             if !state.nextLine.isEmpty {
                 Text(state.nextLine)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .font(.system(size: size - 4, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.32))
+                    .lineLimit(1)
+            }
+            if !state.nextTranslation.isEmpty {
+                Text(state.nextTranslation)
+                    .font(.system(size: size - 5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.25))
                     .lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, 8)
+        .padding(.vertical, expanded ? 6 : 8)
     }
 
     private var mainLine: String {

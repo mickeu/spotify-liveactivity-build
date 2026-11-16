@@ -464,6 +464,18 @@ public final class SGLLiveIsland: NSObject {
         var nextTranslation = ""
     }
 
+    /// 行的纯文本。优先用插件自己的实现，失败再按词拼接。
+    private static func lineText(_ line: AnyObject) -> String {
+        if let f = fnLineText, let text = f(line) { return text as String }
+        guard let nso = line as? NSObject,
+              let words = value(nso, "words") as? [AnyObject] else { return "" }
+        var out = ""
+        for word in words {
+            if let piece = value(word, "text") as? String { out += piece }
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func parse(line: AnyObject, lines: [AnyObject], index: Int, posMs: Int) -> LineInfo {
         var info = LineInfo()
         guard let nso = line as? NSObject else { return info }
@@ -597,7 +609,7 @@ public final class SGLLiveIsland: NSObject {
             await a.update(content)
             if !loggedUpdate {
                 loggedUpdate = true
-                diag("update ok state=\(a.activityState.rawValue)")
+                diag("update ok state=\(String(describing: a.activityState))")
             }
             return
         }

@@ -1,9 +1,8 @@
 name: Build Live Island
 
 on:
+  # 只手动触发：避免每次 push 自动跑一次 macOS runner（额度/并发受限）
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   build:

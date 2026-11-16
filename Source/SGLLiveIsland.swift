@@ -183,25 +183,14 @@ public final class SGLLiveIsland: NSObject {
     @objc public static func start() {
         guard !started else { return }
         started = true
-        let plugIns = Bundle.main.builtInPlugInsPath.flatMap {
-            try? FileManager.default.contentsOfDirectory(atPath: $0)
-        } ?? []
-        let auth = ActivityAuthorizationInfo()
-        var appexIds: [String] = []
-        if let root = Bundle.main.builtInPlugInsPath {
-            for name in plugIns where name.hasSuffix(".appex") {
-                let path = (root as NSString).appendingPathComponent(name) + "/Info.plist"
-                if let dict = NSDictionary(contentsOfFile: path),
-                   let bid = dict["CFBundleIdentifier"] as? String {
-                    appexIds.append("\(name)=\(bid)")
-                }
-            }
-        }
-        let installed = Bundle.main.bundleIdentifier ?? "?"
-        diag("start iOS \(UIDevice.current.systemVersion) host=\(installed) "
-             + "auth=\(auth.areActivitiesEnabled) ours=\(Activity<SGLyricsAttributes>.activities.count) "
-             + "appex=[\(appexIds.joined(separator: " "))]")
-        settingsFingerprint = settingsKey()
+        // 启动路径只做登记，任何可能阻塞的事情全部延后：
+        // 读扩展清单、查 ActivityKit 授权、装设置页 hook、启动定时器都在 1.5s 后。
+        diag("start enter")
+        observ()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { deferredBoot() }
+    }
+
+    private static func observ() {
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { _ in
@@ -234,10 +223,36 @@ public final class SGLLiveIsland: NSObject {
                 lastFailedKey = nil
                 lastSentKey = nil
                 suppressedTrack = nil
-                tick()
+                if started { tick() }
             }
         })
+    }
+
+    private static func deferredBoot() {
+        diag("boot step1 plugIns")
+        let plugIns = Bundle.main.builtInPlugInsPath.flatMap {
+            try? FileManager.default.contentsOfDirectory(atPath: $0)
+        } ?? []
+        var appexIds: [String] = []
+        if let root = Bundle.main.builtInPlugInsPath {
+            for name in plugIns where name.hasSuffix(".appex") {
+                let path = (root as NSString).appendingPathComponent(name) + "/Info.plist"
+                if let dict = NSDictionary(contentsOfFile: path),
+                   let bid = dict["CFBundleIdentifier"] as? String,
+                   let ver = dict["CFBundleShortVersionString"] as? String {
+                    appexIds.append("\(name)=\(bid)@\(ver)")
+                }
+            }
+        }
+        diag("boot step2 host=\(Bundle.main.bundleIdentifier ?? "?") appex=[\(appexIds.joined(separator: " "))]")
+        let auth = ActivityAuthorizationInfo()
+        diag("boot step3 auth=\(auth.areActivitiesEnabled) existing=\(Activity<SGLyricsAttributes>.activities.count)")
+        settingsFingerprint = settingsKey()
+        SGLInstallSettings()
+        diag("boot step4 settings hooked")
         schedule()
+        diag("boot step5 scheduled on=\(Defaults.isOn)")
+        selfTest()
     }
 
     private static func schedule() {

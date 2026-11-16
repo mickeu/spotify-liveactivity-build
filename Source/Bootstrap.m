@@ -8,7 +8,6 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <UIKit/UIKit.h>
-#import "Settings.h"
 
 id _Nullable SGLLiveIslandSafeValue(id _Nullable obj, NSString *key) {
     if (!obj || !key) return nil;
@@ -30,8 +29,6 @@ static void SGLLiveIslandAttempt(void) {
             sStarted = YES;
         }
     }
-    // 幂等：已经装过就直接返回，插件没加载则下次再试。
-    SGLInstallSettings();
 }
 
 __attribute__((constructor))

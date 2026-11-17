@@ -87,6 +87,8 @@ public final class SGLLiveIsland: NSObject {
     private static let log = Logger(subsystem: "sgliveisland", category: "main")
     private static var timer: Timer?
     private static var started = false
+    private static var armed = false
+    private static var activated = false
     private static var activity: Activity<SGLyricsAttributes>?
 
     private static var cachedTrack: String?
@@ -99,13 +101,6 @@ public final class SGLLiveIsland: NSObject {
     private static var sendRetryAfter = Date.distantPast
     private static var pausedDiagLogged = false
     private static var loggedUpdate = false
-    private static var testTick = 0
-    private static var trace = 0
-    private static func traceLog(_ text: String) {
-        guard trace < 14 else { return }
-        trace += 1
-        diag("T\(trace) \(text)")
-    }
     private static var loggedRequestBlock = false
     private static var lastLinesAttempt = Date.distantPast
     private static var noLyricsTrack: String?
@@ -150,7 +145,6 @@ public final class SGLLiveIsland: NSObject {
         static var islandHidden: Bool { UserDefaults.standard.object(forKey: hidden) as? Bool ?? false }
         /// 设置项「宽度」：0 标准 / 1 最长
         static var wideIsland: Bool { (UserDefaults.standard.object(forKey: width) as? Int ?? 0) == 1 }
-        static var selfTestOnly: Bool { false }
         static var showTranslation: Bool {
             UserDefaults.standard.object(forKey: showTranslationKey) as? Bool ?? true
         }
@@ -183,14 +177,34 @@ public final class SGLLiveIsland: NSObject {
     @objc public static func start() {
         guard !started else { return }
         started = true
-        // 启动路径只做登记，任何可能阻塞的事情全部延后：
-        // 读扩展清单、查 ActivityKit 授权、装设置页 hook、启动定时器都在 1.5s 后。
-        diag("start enter")
-        observ()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { deferredBoot() }
+        // 启动期什么都不做。只在首次进入前台且静置 20 秒后，才在后台排队激活。
+        // 崩溃报告显示启动期做这些事会与主线程 dispatch_sync 相互等待，触发 watchdog。
+        SGLLogLine("start registered, awaiting idle activation")
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            guard !armed else { return }
+            armed = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                MainActor.assumeIsolated { activate() }
+            }
+        })
     }
 
-    private static func observ() {
+    private static func activate() {
+        guard !activated else { return }
+        activated = true
+        SGLLogLine("activate begin")
+        SGLInstallSettings()
+        SGLLogLine("activate hook done")
+        settingsFingerprint = settingsKey()
+        observRuntime()
+        schedule()
+        SGLLogLine("activate done on=\(Defaults.isOn)")
+    }
+
+    /// 运行期通知：只在激活后才注册，避免启动期参与通知派发。
+    private static func observRuntime() {
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { _ in
@@ -223,36 +237,9 @@ public final class SGLLiveIsland: NSObject {
                 lastFailedKey = nil
                 lastSentKey = nil
                 suppressedTrack = nil
-                if started { tick() }
+                tick()
             }
         })
-    }
-
-    private static func deferredBoot() {
-        diag("boot step1 plugIns")
-        let plugIns = Bundle.main.builtInPlugInsPath.flatMap {
-            try? FileManager.default.contentsOfDirectory(atPath: $0)
-        } ?? []
-        var appexIds: [String] = []
-        if let root = Bundle.main.builtInPlugInsPath {
-            for name in plugIns where name.hasSuffix(".appex") {
-                let path = (root as NSString).appendingPathComponent(name) + "/Info.plist"
-                if let dict = NSDictionary(contentsOfFile: path),
-                   let bid = dict["CFBundleIdentifier"] as? String,
-                   let ver = dict["CFBundleShortVersionString"] as? String {
-                    appexIds.append("\(name)=\(bid)@\(ver)")
-                }
-            }
-        }
-        diag("boot step2 host=\(Bundle.main.bundleIdentifier ?? "?") appex=[\(appexIds.joined(separator: " "))]")
-        let auth = ActivityAuthorizationInfo()
-        diag("boot step3 auth=\(auth.areActivitiesEnabled) existing=\(Activity<SGLyricsAttributes>.activities.count)")
-        settingsFingerprint = settingsKey()
-        SGLInstallSettings()
-        diag("boot step4 settings hooked")
-        schedule()
-        diag("boot step5 scheduled on=\(Defaults.isOn)")
-        selfTest()
     }
 
     private static func schedule() {
@@ -284,7 +271,6 @@ public final class SGLLiveIsland: NSObject {
 
     private static func tick() {
         guard Defaults.isOn else { return }
-        if Defaults.selfTestOnly { return }
         guard link() else {
             if retryAfter < Date() {
                 retryAfter = Date().addingTimeInterval(5)
@@ -578,7 +564,6 @@ public final class SGLLiveIsland: NSObject {
             lastSentKey = nil
             return
         }
-        _ = data
         pendingState = state
         pendingStale = stale
         pendingKey = lastSentKey
@@ -588,23 +573,8 @@ public final class SGLLiveIsland: NSObject {
 
     private static var endRequested = false
 
-    /// 最小验证：不依赖歌词与插件，直接请求一张写死文字的活动。
-    private static func selfTest() {
-        guard Defaults.isOn, testTick < 3 else { return }
-        testTick += 1
-        let text = "自检 TEST #\(testTick)"
-        let state = SGLyricsAttributes.ContentState(
-            line: text, prevLine: "", nextLine: "", translation: "", nextTranslation: "",
-            paused: false, lineStart: Date(), lineDuration: 20, pausedAt: nil,
-            fontStep: Defaults.fontStep, useArtworkColor: false, islandHidden: false,
-            wideIsland: Defaults.wideIsland, smoothScroll: false, showTranslation: false,
-            accent: SGLyricsAttributes.ContentState.defaultAccent)
-        deliverState(state, stale: nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { selfTest() }
-    }
-
     private static func drain() {
-        if sending { traceLog("drain busy"); return }
+        guard !sending else { return }
         sending = true
         Task { @MainActor in
             defer { sending = false }
@@ -623,10 +593,7 @@ public final class SGLLiveIsland: NSObject {
                 pendingState = nil
                 pendingStale = nil
                 pendingKey = nil
-                guard epoch == generation, Defaults.isOn else {
-                    traceLog("drop epoch=\(epoch)/\(generation) on=\(Defaults.isOn)")
-                    continue
-                }
+                guard epoch == generation, Defaults.isOn else { continue }
                 await send(state, stale: stale, key: key, epoch: epoch)
             }
         }
@@ -635,7 +602,6 @@ public final class SGLLiveIsland: NSObject {
     @MainActor
     private static func send(_ state: SGLyricsAttributes.ContentState,
                              stale: Date?, key: String?, epoch: Int) async {
-        traceLog("send act=\(activity == nil ? "nil" : "some") fg=\(UIApplication.shared.applicationState == .active)")
         let content = ActivityContent(state: state, staleDate: stale)
         if let a = activity, a.activityState == .active || a.activityState == .stale {
             await a.update(content)
